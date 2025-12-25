@@ -173,81 +173,81 @@ def run():
 # [기존 메인 로직]
 # ---------------------------------------------------------
 # def run():
-    with sync_playwright() as p:
-        # 브라우저 열기 (화면 크기 설정 포함)
-        browser = p.chromium.launch(headless=False, slow_mo=1000)
-        context = browser.new_context(viewport={'width': 1280, 'height': 720})
-        page = context.new_page()
+    # with sync_playwright() as p:
+    #     # 브라우저 열기 (화면 크기 설정 포함)
+    #     browser = p.chromium.launch(headless=False, slow_mo=1000)
+    #     context = browser.new_context(viewport={'width': 1280, 'height': 720})
+    #     page = context.new_page()
         
-        try:
-            # # --- [로그인 및 데이터 수집 로직] ---
-            # # (테스트를 위해 일부러 에러를 내보겠습니다)
-            # print(">> 테스트 시작: 의도적으로 에러를 발생시킵니다.")
+    #     try:
+    #         # # --- [로그인 및 데이터 수집 로직] ---
+    #         # # (테스트를 위해 일부러 에러를 내보겠습니다)
+    #         # print(">> 테스트 시작: 의도적으로 에러를 발생시킵니다.")
             
-            # # # 일부러 없는 사이트로 이동 -> 에러 발생 유도
-            # page.goto("https://www.daum.net/없는페이지") 
+    #         # # # 일부러 없는 사이트로 이동 -> 에러 발생 유도
+    #         # page.goto("https://www.daum.net/없는페이지") 
 
-            # --- [Phase 1: 로그인] ---
-            print(">> 1. 다음 메인 접속 및 로그인 시도")
-            page.goto("https://www.daum.net")
+    #         # --- [Phase 1: 로그인] ---
+    #         print(">> 1. 다음 메인 접속 및 로그인 시도")
+    #         page.goto("https://www.daum.net")
             
-            if page.is_visible('text="카카오계정으로 로그인"'):
-                page.click('text="카카오계정으로 로그인"')
+    #         if page.is_visible('text="카카오계정으로 로그인"'):
+    #             page.click('text="카카오계정으로 로그인"')
                 
-                # [매니저님이 찾으신 추가 단계!]
-                if page.is_visible('text="카카오로 로그인"'):
-                    print(">> '카카오로 로그인' 버튼 클릭")
-                    page.click('text="카카오로 로그인"')
+    #             # [매니저님이 찾으신 추가 단계!]
+    #             if page.is_visible('text="카카오로 로그인"'):
+    #                 print(">> '카카오로 로그인' 버튼 클릭")
+    #                 page.click('text="카카오로 로그인"')
                 
-                print(">> 'QR코드 로그인' 선택")
-                page.click('text="QR코드 로그인"')
+    #             print(">> 'QR코드 로그인' 선택")
+    #             page.click('text="QR코드 로그인"')
                 
-                print(">> 🚨 핸드폰으로 QR코드를 스캔해주세요! (60초 대기)")
+    #             print(">> 🚨 핸드폰으로 QR코드를 스캔해주세요! (60초 대기)")
                 
-                # 로그인 완료 후 메인으로 돌아올 때까지 대기
-                page.wait_for_url("**/www.daum.net/**", timeout=60000)
-                print(">> ✅ 로그인 성공! 메인 페이지 진입 완료")
+    #             # 로그인 완료 후 메인으로 돌아올 때까지 대기
+    #             page.wait_for_url("**/www.daum.net/**", timeout=60000)
+    #             print(">> ✅ 로그인 성공! 메인 페이지 진입 완료")
 
-            # --- [Phase 2: 지도 데이터 수집] ---
-            print(">> 2. 카카오맵 이동")
-            page.goto("https://map.kakao.com/")
+    #         # --- [Phase 2: 지도 데이터 수집] ---
+    #         print(">> 2. 카카오맵 이동")
+    #         page.goto("https://map.kakao.com/")
             
-            # 검색창이 뜰 때까지 안전하게 대기
-            page.wait_for_selector('#search\.keyword\.query', timeout=10000)
+    #         # 검색창이 뜰 때까지 안전하게 대기
+    #         page.wait_for_selector('#search\.keyword\.query', timeout=10000)
             
-            print(">> 3. '강남역 맛집' 검색")
-            page.fill('#search\.keyword\.query', "강남역 맛집")
-            page.press('#search\.keyword\.query', 'Enter')
+    #         print(">> 3. '강남역 맛집' 검색")
+    #         page.fill('#search\.keyword\.query', "강남역 맛집")
+    #         page.press('#search\.keyword\.query', 'Enter')
             
-            # 결과 리스트 로딩 대기
-            page.wait_for_selector('#info\.search\.place\.list', timeout=5000)
+    #         # 결과 리스트 로딩 대기
+    #         page.wait_for_selector('#info\.search\.place\.list', timeout=5000)
             
-            # 데이터 추출
-            print(">> 4. 데이터 수집 중...")
-            places = page.locator('.PlaceItem')
-            count = places.count()
+    #         # 데이터 추출
+    #         print(">> 4. 데이터 수집 중...")
+    #         places = page.locator('.PlaceItem')
+    #         count = places.count()
             
-            # 결과 메시지 만들기
-            result_msg = f"✅ [자동화 성공] 총 {count}개 맛집 발견!\n"
+    #         # 결과 메시지 만들기
+    #         result_msg = f"✅ [자동화 성공] 총 {count}개 맛집 발견!\n"
             
-            for i in range(min(3, count)): # 상위 3개만
-                name = places.nth(i).locator('.link_name').inner_text()
-                result_msg += f"- {name}\n"
+    #         for i in range(min(3, count)): # 상위 3개만
+    #             name = places.nth(i).locator('.link_name').inner_text()
+    #             result_msg += f"- {name}\n"
             
-            print(result_msg)
+    #         print(result_msg)
             
-            # (선택) 성공했을 때도 카톡을 받고 싶으면 아래 주석(#)을 지우세요
-            send_kakao_msg(result_msg)
+    #         # (선택) 성공했을 때도 카톡을 받고 싶으면 아래 주석(#)을 지우세요
+    #         send_kakao_msg(result_msg)
             
-        except Exception as e:
-            # 에러 발생 시 알림 전송 (여기서 토큰 만료되면 자동 갱신됨)
-            error_msg = f"🚨 [자동갱신 테스트] QA 테스트 실패!\n\n에러 내용: {str(e)[:50]}" 
-            print(">> ❌ 에러 감지! 알림 전송 로직을 수행합니다.")
-            send_kakao_msg(error_msg)
+    #     except Exception as e:
+    #         # 에러 발생 시 알림 전송 (여기서 토큰 만료되면 자동 갱신됨)
+    #         error_msg = f"🚨 [자동갱신 테스트] QA 테스트 실패!\n\n에러 내용: {str(e)[:50]}" 
+    #         print(">> ❌ 에러 감지! 알림 전송 로직을 수행합니다.")
+    #         send_kakao_msg(error_msg)
             
-        finally:
-            page.wait_for_timeout(2000)
-            browser.close()
+    #     finally:
+    #         page.wait_for_timeout(2000)
+    #         browser.close()
 
 if __name__ == "__main__":
     run()
