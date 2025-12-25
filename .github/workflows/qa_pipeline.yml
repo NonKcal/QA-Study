@@ -26,26 +26,21 @@ jobs:
         pip install -r requirements.txt
         playwright install chromium  # 브라우저 설치
 
-    # 4. [중요] GitHub Secrets를 이용해 토큰 파일(json) 즉석 생성
-    # 서버에는 json 파일이 없으므로, Secret 정보를 조합해 만들어줍니다.
-    - name: Create Token JSON
+    # 4. [통합됨] 토큰 파일 생성 및 테스트 실행
+    # (이 단계에서 파일 생성과 실행을 한 번에 처리합니다)
+    - name: Run QA Test & Notify
       env:
         ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
         REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
-      run: |
-        echo "{\"access_token\": \"$ACCESS_TOKEN\", \"refresh_token\": \"$REFRESH_TOKEN\"}" > kakao_token.json
-
-    # 5. 테스트 실행
-    - name: Run QA Test & Notify
-      env:
-        # .env 대신 환경변수로 주입
         KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
-        CI: true
       run: |
-        echo "$KAKAO_TOKEN_JSON" > kakao_token.json
+        # 1. GitHub Secrets를 조합해 kakao_token.json 파일 생성
+        echo "{\"access_token\": \"$ACCESS_TOKEN\", \"refresh_token\": \"$REFRESH_TOKEN\"}" > kakao_token.json
+        
+        # 2. 파이썬 스크립트 실행
         python kakao_map.py
 
-    # 6. (선택) 에러 스크린샷 업로드 (실패 시에만)
+    # 5. (선택) 에러 스크린샷 업로드 (실패 시에만)
     - name: Upload Error Screenshot
       if: failure()
       uses: actions/upload-artifact@v4
