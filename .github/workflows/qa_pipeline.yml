@@ -36,12 +36,13 @@ jobs:
         echo "{\"access_token\": \"$ACCESS_TOKEN\", \"refresh_token\": \"$REFRESH_TOKEN\"}" > kakao_token.json
 
     # 5. 테스트 실행
-    - name: Run Playwright Test
+    - name: Run QA Test & Notify
       env:
         # .env 대신 환경변수로 주입
         KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
         CI: true
       run: |
+        echo "$KAKAO_TOKEN_JSON" > kakao_token.json
         python kakao_map.py
 
     # 6. (선택) 에러 스크린샷 업로드 (실패 시에만)
