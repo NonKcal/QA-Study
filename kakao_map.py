@@ -11,6 +11,7 @@ import test_site  # 👈 분리해둔 test_site.py 파일을 불러옵니다
 TOKEN_FILE = "kakao_token.json"
 # GitHub Secrets에 등록된 키를 환경변수로 받거나, 없으면 직접 입력
 REST_API_KEY = os.environ.get("KAKAO_REST_API_KEY")
+CLIENT_SECRET = os.environ.get("KAKAO_CLIENT_SECRET")
 
 # ---------------------------------------------------------
 # [기능 1] 토큰 자동 갱신 (전체 코드 포함)
@@ -33,7 +34,8 @@ def refresh_access_token():
         data = {
             "grant_type": "refresh_token",
             "client_id": REST_API_KEY,
-            "refresh_token": refresh_token
+            "refresh_token": refresh_token,
+            "client_secret": CLIENT_SECRET
         }
         
         response = requests.post(url, data=data)
