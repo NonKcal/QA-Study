@@ -143,3 +143,5 @@ if __name__ == "__main__":
     # 6. GitHub Actions 빌드 상태 설정 (실패 시 빨간불 Exit)
     if not is_success:
         sys.exit(1)
+
+    #테스트123
