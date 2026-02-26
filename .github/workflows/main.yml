@@ -30,7 +30,7 @@ jobs:
           # GitHub Secrets에서 환경변수로 토큰 및 키 주입
           KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
           KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
-        run: python test_oliveyoung_search.py
+        run: python "01.oliveyoung search 'menscare'/test_oliveyoung_search.py"
 
       - name: 테스트 증거(Artifact) 업로드
         if: always() # 테스트 실패 시에도 항상 리포트를 남기도록 설정 (ISTQB: 인시던트 로깅)
