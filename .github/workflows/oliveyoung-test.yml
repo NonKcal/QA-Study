@@ -1,0 +1,75 @@
+name: 올리브영 맨즈케어 검색 자동화 테스트
+
+# ──────────────────────────────────────────────────────
+# 🔐 보안 설계 원칙
+#   - Secrets는 env: 블록에서만 선언 → 해당 step에만 스코프 제한
+#   - echo / cat 으로 토큰값을 파일에 쓰는 방식 사용 안 함
+#   - kakao_token.json 별도 생성 없이 os.environ 으로 직접 참조
+#   - 로그 마스킹: GitHub Actions 는 secrets 값을 자동으로 *** 처리
+#
+# ⏰ 스케줄 설계
+#   - GitHub Actions cron 은 UTC 기준
+#   - KST 09:00 = UTC 00:00  →  cron: '0 0 * * *'
+#   - push 트리거 제거: 코드 변경 시마다 실행되지 않도록 의도적 분리
+# ──────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '0 0 * * *'      # 매일 KST 09:00 (UTC 00:00) 자동 실행
+  workflow_dispatch:          # GitHub Actions 탭에서 수동 실행 버튼
+
+# 동일 워크플로우가 중복 실행되지 않도록 방지
+# (수동 실행과 스케줄이 겹칠 경우 대비)
+concurrency:
+  group: oliveyoung-daily
+  cancel-in-progress: false   # 진행 중인 테스트는 중단하지 않음
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── STEP 1. 소스 체크아웃 ──────────────────────────
+      - name: 📥 소스 체크아웃
+        uses: actions/checkout@v4
+
+      # ── STEP 2. Python 설정 ────────────────────────────
+      - name: 🐍 Python 3.11 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── STEP 3. 의존성 설치 ────────────────────────────
+      - name: 📦 라이브러리 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── STEP 4. Playwright 브라우저 설치 ──────────────
+      #   'python -m playwright' 권장 (PATH 불일치 방지)
+      - name: 🎭 Playwright Chromium 설치
+        run: python -m playwright install chromium --with-deps
+
+      # ── STEP 5. 테스트 실행 + 카카오톡 알림 ───────────
+      #   🔐 env: 블록 = 이 step 스코프에서만 환경변수 유효
+      #           Python 코드는 os.environ.get() 으로만 참조
+      #           값은 Actions 로그에서 *** 자동 마스킹됨
+      - name: 🧪 테스트 실행 & 카카오톡 알림
+        env:
+          KAKAO_ACCESS_TOKEN:  ${{ secrets.KAKAO_ACCESS_TOKEN }}
+          KAKAO_REST_API_KEY:  ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+        run: python test_oliveyoung_search.py
+
+      # ── STEP 6. 실패 시 스크린샷 업로드 ──────────────
+      #   테스트 실패 시 마지막 페이지 상태를 캡처해 7일간 보관
+      - name: 📸 오류 스크린샷 업로드
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-screenshot-${{ github.run_id }}
+          path: error_capture.png
+          retention-days: 7
