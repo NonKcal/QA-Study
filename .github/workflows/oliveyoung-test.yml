@@ -62,7 +62,9 @@ jobs:
           KAKAO_REST_API_KEY:  ${{ secrets.KAKAO_REST_API_KEY }}
           KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
           KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
-        run: python test_oliveyoung_search.py
+        run: 
+          cd "02. oliveyoung search 'menscare' - claud"
+          python test_oliveyoung_search.py
 
       # ── STEP 6. 실패 시 스크린샷 업로드 ──────────────
       #   테스트 실패 시 마지막 페이지 상태를 캡처해 7일간 보관
