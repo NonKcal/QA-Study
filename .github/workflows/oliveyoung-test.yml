@@ -46,6 +46,7 @@ jobs:
       # ── STEP 3. 의존성 설치 ────────────────────────────
       - name: 📦 라이브러리 설치
         run: |
+          cd "02. oliveyoung search 'menscare' - claud"
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
@@ -64,7 +65,7 @@ jobs:
           KAKAO_REST_API_KEY:  ${{ secrets.KAKAO_REST_API_KEY }}
           KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
           KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
-        run: 
+        run: |
           cd "02. oliveyoung search 'menscare' - claud"
           python test_oliveyoung_search.py
 
