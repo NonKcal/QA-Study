@@ -1,10 +1,22 @@
 """
 올리브영 맨즈케어 검색 자동화 테스트
-ISTQB 기반: Functional Testing / Boundary Value Analysis / Equivalence Partitioning
+─────────────────────────────────────────────
+단일 책임: 테스트 실행 + 카카오톡 결과 전송만 담당
+실행 시점: YML STEP 6 → refresh_token.py 실행 후
+
+ISTQB 기반:
+  - Functional Testing
+  - Equivalence Partitioning (동치 분할)
+  - Boundary Value Analysis (경계값 분석)
 테스트 레벨: Component Integration Testing
-실행 환경: GitHub Actions (매일 KST 09:00 자동 스케줄)
-작성자: QA Study
+실행 환경: GitHub Actions (매일 KST 06~11시 자동 스케줄)
 위치: C:\QA_Study\02. oliveyoung search 'menscare' - claud
+
+필요 환경변수 (GitHub Secrets):
+  KAKAO_ACCESS_TOKEN  : 카카오 액세스 토큰 (refresh_token.py 가 갱신 완료한 값)
+  KAKAO_REST_API_KEY  : 카카오 REST API 키
+  KAKAO_CLIENT_SECRET : 카카오 클라이언트 시크릿
+  KAKAO_REFRESH_TOKEN : 카카오 리프레시 토큰
 """
 
 import asyncio
@@ -24,43 +36,16 @@ KST = timezone(timedelta(hours=9))
 # ──────────────────────────────────────────────
 class KakaoNotifier:
     """
-    GitHub Actions Secrets 기반 카카오톡 알림 전송
-    환경변수: KAKAO_ACCESS_TOKEN, KAKAO_REST_API_KEY,
-              KAKAO_CLIENT_SECRET, KAKAO_REFRESH_TOKEN
+    카카오톡 '나에게 보내기' 전송 전담 클래스
+    토큰 갱신 로직 없음 → refresh_token.py 에서 사전 처리됨
     """
 
-    TOKEN_REFRESH_URL = "https://kauth.kakao.com/oauth/token"
     SEND_ME_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
 
     def __init__(self):
         self.access_token = os.environ.get("KAKAO_ACCESS_TOKEN", "")
-        self.rest_api_key = os.environ.get("KAKAO_REST_API_KEY", "")
-        self.client_secret = os.environ.get("KAKAO_CLIENT_SECRET", "")
-        self.refresh_token = os.environ.get("KAKAO_REFRESH_TOKEN", "")
 
-    def _refresh_access_token(self) -> bool:
-        """액세스 토큰 갱신 (만료 시 자동 호출)"""
-        payload = {
-            "grant_type": "refresh_token",
-            "client_id": self.rest_api_key,
-            "refresh_token": self.refresh_token,
-            "client_secret": self.client_secret,
-        }
-        try:
-            resp = requests.post(self.TOKEN_REFRESH_URL, data=payload, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            self.access_token = data.get("access_token", self.access_token)
-            # refresh_token도 갱신될 수 있음
-            if "refresh_token" in data:
-                self.refresh_token = data["refresh_token"]
-            print("[카카오] 토큰 갱신 성공")
-            return True
-        except Exception as e:
-            print(f"[카카오] 토큰 갱신 실패: {e}")
-            return False
-
-    def send(self, text: str, retry: bool = True) -> bool:
+    def send(self, text: str) -> bool:
         """카카오톡 나에게 보내기"""
         if not self.access_token:
             print("[카카오] ACCESS_TOKEN 없음 → 전송 스킵")
@@ -68,9 +53,9 @@ class KakaoNotifier:
 
         template = {
             "object_type": "text",
-            "text": text[:2000],          # 카카오 최대 2000자
+            "text": text[:2000],    # 카카오 최대 2000자
             "link": {
-                "web_url": "https://www.oliveyoung.co.kr",
+                "web_url":        "https://www.oliveyoung.co.kr",
                 "mobile_web_url": "https://www.oliveyoung.co.kr",
             },
         }
@@ -81,10 +66,6 @@ class KakaoNotifier:
             resp = requests.post(
                 self.SEND_ME_URL, headers=headers, data=payload, timeout=10
             )
-            if resp.status_code == 401 and retry:
-                # 토큰 만료 → 갱신 후 재시도
-                if self._refresh_access_token():
-                    return self.send(text, retry=False)
             resp.raise_for_status()
             print("[카카오] 전송 성공 ✅")
             return True
@@ -98,25 +79,25 @@ class KakaoNotifier:
 # ISTQB EP(동치 분할) + BVA(경계값 분석) 기반 설계
 # ──────────────────────────────────────────────
 TEST_CASES = [
-    # (test_id, keyword, category, description)
-    ("TC_001", "맨즈케어",  "Valid",    "정상 검색어 - 카테고리명 일치"),
-    ("TC_002", "샴푸",      "Valid",    "정상 검색어 - 관련 상품명"),
-    ("TC_003", "삼퓨",      "Typo",     "오타 - 받침 혼동 (샴→삼)"),
-    ("TC_004", "샤ㅁ푸",    "Typo",     "오타 - 자음/모음 분리 입력"),
-    ("TC_005", "샴ㅍ",      "Typo",     "오타 - 불완전 입력 (미완성 글자)"),
-    ("TC_006", "ㅅㅍ",      "Typo",     "오타 - 초성 검색"),
-    ("TC_007", "menscare",  "English",  "영문 검색어"),
-    ("TC_008", "men's care","English",  "영문 검색어 - 공백/특수문자 포함"),
-    ("TC_009", "!@#$%",     "Special",  "특수문자만 입력 - 비정상"),
-    ("TC_010", " ",         "Edge",     "공백만 입력 - 경계값"),
+    # (test_id, keyword,      category,  description)
+    ("TC_001", "맨즈케어",   "Valid",   "정상 검색어 - 카테고리명 일치"),
+    ("TC_002", "샴푸",        "Valid",   "정상 검색어 - 관련 상품명"),
+    ("TC_003", "삼퓨",        "Typo",    "오타 - 받침 혼동 (샴→삼)"),
+    ("TC_004", "샤ㅁ푸",      "Typo",    "오타 - 자음/모음 분리 입력"),
+    ("TC_005", "샴ㅍ",        "Typo",    "오타 - 불완전 입력 (미완성 글자)"),
+    ("TC_006", "ㅅㅍ",        "Typo",    "오타 - 초성 검색"),
+    ("TC_007", "menscare",    "English", "영문 검색어"),
+    ("TC_008", "men's care",  "English", "영문 검색어 - 공백/특수문자 포함"),
+    ("TC_009", "!@#$%",       "Special", "특수문자만 입력 - 비정상"),
+    ("TC_010", " ",           "Edge",    "공백만 입력 - 경계값"),
 ]
 
-TARGET_URL = "https://www.oliveyoung.co.kr"
+TARGET_URL  = "https://www.oliveyoung.co.kr"
 SEARCH_LIMIT = 10
 
 
 # ──────────────────────────────────────────────
-# 핵심 테스트 실행
+# 검색 실행
 # ──────────────────────────────────────────────
 async def search_oliveyoung(page, keyword: str) -> list[dict]:
     """
@@ -125,16 +106,17 @@ async def search_oliveyoung(page, keyword: str) -> list[dict]:
     """
     products = []
     try:
-        # 검색 URL 직접 접근 (안정성 ↑)
         search_url = (
-            f"https://www.oliveyoung.co.kr/store/search/getSearchMain.do"
+            "https://www.oliveyoung.co.kr/store/search/getSearchMain.do"
             f"?query={requests.utils.quote(keyword)}"
         )
         await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
 
-        # 팝업/레이어 닫기 (있을 경우)
+        # 팝업/레이어 닫기
         try:
-            close_btn = page.locator(".gy-pop-close, .pop-close, [aria-label='닫기']").first
+            close_btn = page.locator(
+                ".gy-pop-close, .pop-close, [aria-label='닫기']"
+            ).first
             if await close_btn.is_visible(timeout=3000):
                 await close_btn.click()
                 await page.wait_for_timeout(500)
@@ -149,8 +131,9 @@ async def search_oliveyoung(page, keyword: str) -> list[dict]:
         # 상품 목록 수집
         items = await page.query_selector_all(".prd-item, .item, .goods-li")
         if not items:
-            # 대체 셀렉터 시도
-            items = await page.query_selector_all("[class*='prd-item'], [class*='goods']")
+            items = await page.query_selector_all(
+                "[class*='prd-item'], [class*='goods']"
+            )
 
         for i, item in enumerate(items[:SEARCH_LIMIT], 1):
             try:
@@ -159,27 +142,30 @@ async def search_oliveyoung(page, keyword: str) -> list[dict]:
                 price_el = await item.query_selector(".price-1, .price, .cost")
                 link_el  = await item.query_selector("a")
 
-                name   = (await name_el.inner_text()).strip()  if name_el  else "N/A"
-                brand  = (await brand_el.inner_text()).strip() if brand_el else "N/A"
-                price  = (await price_el.inner_text()).strip() if price_el else "N/A"
-                href   = await link_el.get_attribute("href")   if link_el  else ""
-                url    = href if href.startswith("http") else TARGET_URL + href
+                name  = (await name_el.inner_text()).strip()  if name_el  else "N/A"
+                brand = (await brand_el.inner_text()).strip() if brand_el else "N/A"
+                price = (await price_el.inner_text()).strip() if price_el else "N/A"
+                href  = await link_el.get_attribute("href")   if link_el  else ""
+                url   = href if href.startswith("http") else TARGET_URL + href
 
                 products.append({
                     "rank": i, "name": name, "brand": brand,
-                    "price": price, "url": url
+                    "price": price, "url": url,
                 })
             except Exception:
                 continue
 
     except PlaywrightTimeoutError:
-        pass  # 결과 없음 처리는 호출부에서
+        pass
     except Exception as e:
-        print(f"  [오류] {keyword} 검색 중 예외: {e}")
+        print(f"  [오류] '{keyword}' 검색 중 예외: {e}")
 
     return products
 
 
+# ──────────────────────────────────────────────
+# 단일 TC 실행
+# ──────────────────────────────────────────────
 async def run_test_case(page, tc: tuple) -> dict:
     """단일 테스트 케이스 실행 및 결과 반환"""
     tc_id, keyword, category, desc = tc
@@ -187,20 +173,21 @@ async def run_test_case(page, tc: tuple) -> dict:
     print(f"▶ {tc_id} | [{category}] {desc}")
     print(f"  검색어: '{keyword}'")
 
-    start = datetime.now()
+    start    = datetime.now()
     products = await search_oliveyoung(page, keyword)
-    elapsed = (datetime.now() - start).total_seconds()
+    elapsed  = (datetime.now() - start).total_seconds()
 
-    # 판정: 상품 1개 이상이면 PASS (단, Special/Edge는 반전)
+    # ── 판정 ──
+    # Special/Edge: 결과 없음이 예상 동작 → PASS
+    # 그 외       : 결과 있음이 예상 동작 → PASS
     if category in ("Special", "Edge"):
-        # 특수문자/공백은 결과가 없거나 오류처리되면 PASS
         verdict = "PASS" if len(products) == 0 else "FAIL"
-        note = "결과 없음(예상 동작)" if verdict == "PASS" else f"예상치 못한 {len(products)}건 결과"
+        note    = "결과 없음(예상 동작)" if verdict == "PASS" \
+                  else f"예상치 못한 {len(products)}건 결과"
     else:
         verdict = "PASS" if len(products) > 0 else "FAIL"
-        note = f"상위 {len(products)}건 수집" if products else "검색 결과 없음"
+        note    = f"상위 {len(products)}건 수집" if products else "검색 결과 없음"
 
-    # 콘솔 출력
     icon = "✅" if verdict == "PASS" else "❌"
     print(f"  결과: {icon} {verdict} | {note} | {elapsed:.1f}s")
     for p in products:
@@ -208,14 +195,14 @@ async def run_test_case(page, tc: tuple) -> dict:
         print(f"    #{p['rank']:02d} {p['brand']} - {p['name']} | {price_clean}")
 
     return {
-        "tc_id": tc_id,
-        "keyword": keyword,
-        "category": category,
+        "tc_id":       tc_id,
+        "keyword":     keyword,
+        "category":    category,
         "description": desc,
-        "verdict": verdict,
-        "note": note,
-        "elapsed": elapsed,
-        "products": products,
+        "verdict":     verdict,
+        "note":        note,
+        "elapsed":     elapsed,
+        "products":    products,
     }
 
 
@@ -224,10 +211,10 @@ async def run_test_case(page, tc: tuple) -> dict:
 # ──────────────────────────────────────────────
 def build_kakao_report(results: list[dict]) -> str:
     """테스트 결과를 카카오톡 메시지로 포맷"""
-    now = datetime.now(KST).strftime("%Y-%m-%d %H:%M (KST)")
-    total = len(results)
-    passed = sum(1 for r in results if r["verdict"] == "PASS")
-    failed = total - passed
+    now       = datetime.now(KST).strftime("%Y-%m-%d %H:%M (KST)")
+    total     = len(results)
+    passed    = sum(1 for r in results if r["verdict"] == "PASS")
+    failed    = total - passed
     pass_rate = (passed / total * 100) if total else 0
 
     lines = [
@@ -239,12 +226,9 @@ def build_kakao_report(results: list[dict]) -> str:
 
     for r in results:
         icon = "✅" if r["verdict"] == "PASS" else "❌"
-        lines.append(
-            f"{icon} {r['tc_id']} [{r['category']}] '{r['keyword']}'"
-        )
+        lines.append(f"{icon} {r['tc_id']} [{r['category']}] '{r['keyword']}'")
         lines.append(f"   → {r['note']} ({r['elapsed']:.1f}s)")
 
-        # 상위 3개 상품만 첨부
         for p in r["products"][:3]:
             price_clean = re.sub(r'\s+', ' ', p['price'])
             lines.append(f"   #{p['rank']} {p['name']} {price_clean}")
@@ -271,15 +255,15 @@ async def main():
     print(f"  실행 시각: {now_kst}")
     print("=" * 55)
 
-    results = []
+    results  = []
     notifier = KakaoNotifier()
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
-            headless=True,            # CI 환경: 화면 없는 서버에서 실행
+            headless=True,
             args=[
-                "--no-sandbox",           # GitHub Actions (Linux) 필수
-                "--disable-dev-shm-usage",# 메모리 부족 방지
+                "--no-sandbox",            # GitHub Actions (Linux) 필수
+                "--disable-dev-shm-usage", # 메모리 부족 방지
                 "--disable-gpu",
                 "--window-size=1400,900",
             ],
@@ -302,17 +286,16 @@ async def main():
         for tc in TEST_CASES:
             result = await run_test_case(page, tc)
             results.append(result)
-            await page.wait_for_timeout(1500)   # 요청 간 간격 (anti-bot 대응)
+            await page.wait_for_timeout(1500)  # 요청 간 간격 (anti-bot 대응)
 
-        # 실패 케이스 스크린샷 저장 (Actions artifact 업로드용)
-        failed_cases = [r for r in results if r["verdict"] == "FAIL"]
-        if failed_cases:
+        # 실패 케이스 스크린샷 저장
+        if any(r["verdict"] == "FAIL" for r in results):
             await page.screenshot(path="error_capture.png", full_page=True)
             print("[스크린샷] error_capture.png 저장됨")
 
         await browser.close()
 
-    # ── 최종 요약 출력 ──
+    # ── 최종 요약 ──
     total  = len(results)
     passed = sum(1 for r in results if r["verdict"] == "PASS")
     print(f"\n{'='*55}")
