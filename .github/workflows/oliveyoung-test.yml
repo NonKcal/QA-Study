@@ -15,9 +15,12 @@ name: 올리브영 맨즈케어 검색 자동화 테스트
 
 on:
   schedule:
+    - cron: '0 21 * * *'   # KST 06:00 (UTC 21:00 전날)
     - cron: '0 22 * * *'   # KST 07:00 (UTC 22:00 전날)
     - cron: '0 23 * * *'   # KST 08:00 (UTC 23:00 전날)
     - cron: '0 0 * * *'    # KST 09:00 (UTC 00:00)
+    - cron: '0 1 * * *'    # KST 10:00 (UTC 01:00)
+    - cron: '0 2 * * *'    # KST 11:00 (UTC 02:00)
   workflow_dispatch:          # GitHub Actions 탭에서 수동 실행 버튼
 
 # 동일 워크플로우가 중복 실행되지 않도록 방지
