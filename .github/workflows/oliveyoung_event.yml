@@ -1,0 +1,91 @@
+name: 올리브영 이벤트 QA
+
+# ──────────────────────────────────────────────────────
+# 🔐 보안 설계 원칙
+#   - Secrets는 env: 블록에서만 선언 → 해당 step에만 스코프 제한
+#   - os.environ.get() 으로만 참조 → 메모리에만 존재
+#   - 로그 마스킹: GitHub Actions 는 secrets 값을 자동으로 *** 처리
+#
+# ⏰ 스케줄 설계
+#   - KST 08:00 = UTC 23:00 (전날)
+#   - push 트리거 제거: 코드 변경 시마다 실행 방지
+#
+# 📂 실행 파일 역할 분리 (단일 책임 원칙)
+#   - refresh_token.py      : 카카오 토큰 갱신 + GitHub Secrets 업데이트
+#   - Test_Case_main_pg.py  : TC-01, TC-02 (메인 페이지)
+#   - Test_Case_event_pg.py : TC-03 (이벤트 페이지)
+# ──────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '0 23 * * *'   # KST 08:00 (UTC 23:00 전날)
+  workflow_dispatch:         # GitHub Actions 탭에서 수동 실행
+
+# 동일 워크플로우 중복 실행 방지
+concurrency:
+  group: oliveyoung-event-qa
+  cancel-in-progress: false  # 진행 중인 테스트는 중단하지 않음
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── STEP 1. 소스 체크아웃 ──────────────────────────
+      - name: 📥 소스 체크아웃
+        uses: actions/checkout@v4
+
+      # ── STEP 2. Python 설정 ────────────────────────────
+      - name: 🐍 Python 3.11 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── STEP 3. 의존성 설치 ────────────────────────────
+      - name: 📦 라이브러리 설치
+        run: |
+          cd "03. oliveyoung event QA"
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── STEP 4. Playwright 브라우저 설치 ──────────────
+      - name: 🎭 Playwright Chromium 설치
+        run: python -m playwright install chromium --with-deps
+
+      # ── STEP 5. 카카오 토큰 갱신 + Secrets 자동 업데이트
+      #   🔐 갱신된 토큰은 파일 저장 없이 GitHub Secrets 에만 기록
+      - name: 🔑 카카오 토큰 갱신
+        env:
+          KAKAO_REST_API_KEY:  ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          GH_PAT:              ${{ secrets.GH_PAT }}
+          GH_REPO:             ${{ github.repository }}
+        run: |
+          cd "03. oliveyoung event QA"
+          python refresh_token.py
+
+      # ── STEP 6. 테스트 실행 + 카카오톡 알림 ───────────
+      #   🔐 KAKAO_ACCESS_TOKEN 은 STEP 5 에서 갱신된 값이
+      #       다음 실행 시 Secrets 에서 자동 주입됨
+      - name: 🧪 테스트 실행 & 카카오톡 알림
+        env:
+          KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
+        run: |
+          cd "03. oliveyoung event QA"
+          python -m pytest Test_Case_main_pg.py Test_Case_event_pg.py \
+            -v \
+            --tb=short \
+            --no-header \
+            -p no:warnings
+
+      # ── STEP 7. 실패 시 스크린샷 업로드 ──────────────
+      - name: 📸 오류 스크린샷 업로드
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-screenshot-${{ github.run_id }}
+          path: "03. oliveyoung event QA/error_capture.png"
+          retention-days: 7
