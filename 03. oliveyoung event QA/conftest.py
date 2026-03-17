@@ -138,22 +138,45 @@ def _build_message() -> str:
 
 
 def _send_kakao(message: str) -> None:
-    """카카오 나에게 보내기 API"""
+    """
+    카카오 나에게 보내기 API
+    ※ link 필드 요구사항:
+      - web_url과 mobile_web_url 모두 등록된 도메인이어야 함
+      - 카카오 개발자센터 > 앱 설정 > 플랫폼 > Web에
+        해당 도메인이 등록되어 있어야 클릭 시 정상 이동
+    """
+    import json
+
     access_token = os.environ.get("KAKAO_ACCESS_TOKEN", "")
     if not access_token:
         print("[카카오] KAKAO_ACCESS_TOKEN 미설정 — 전송 스킵")
         return
 
+    # GitHub Actions 실행 결과 URL (runs 페이지 직접 링크)
+    gh_repo       = os.environ.get("GH_REPO", "")
+    gh_run_id     = os.environ.get("GITHUB_RUN_ID", "")
+    if gh_repo and gh_run_id:
+        # GitHub Actions 실행 결과 페이지로 직접 링크
+        result_url = f"https://github.com/{gh_repo}/actions/runs/{gh_run_id}"
+    else:
+        result_url = "https://www.oliveyoung.co.kr"
+
+    template = {
+        "object_type": "text",
+        "text": message,
+        "link": {
+            # web_url, mobile_web_url 모두 동일 URL로 설정
+            # → 카카오 개발자센터에 github.com 도메인 등록 필요
+            "web_url":        result_url,
+            "mobile_web_url": result_url,
+        },
+        "button_title": "결과 확인하기",  # 링크 버튼 텍스트
+    }
+
     resp = requests.post(
         "https://kapi.kakao.com/v2/api/talk/memo/default/send",
         headers={"Authorization": f"Bearer {access_token}"},
-        data={
-            "template_object": (
-                '{"object_type":"text",'
-                f'"text":{__import__("json").dumps(message)},'
-                '"link":{"web_url":"https://www.oliveyoung.co.kr"}}'
-            )
-        },
+        data={"template_object": json.dumps(template, ensure_ascii=False)},
         timeout=10,
     )
     if resp.status_code == 200:

@@ -70,9 +70,12 @@ jobs:
       # ── STEP 6. 테스트 실행 + 카카오톡 알림 ───────────
       #   🔐 KAKAO_ACCESS_TOKEN 은 STEP 5 에서 갱신된 값이
       #       다음 실행 시 Secrets 에서 자동 주입됨
+      #   GITHUB_RUN_ID: Actions 실행 ID → 카카오 결과 링크 생성에 사용
       - name: 🧪 테스트 실행 & 카카오톡 알림
         env:
           KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
+          GH_REPO:            ${{ github.repository }}
+          GITHUB_RUN_ID:      ${{ github.run_id }}
         run: |
           cd "03. oliveyoung event QA"
           python -m pytest Test_Case_main_pg.py Test_Case_event_pg.py \
