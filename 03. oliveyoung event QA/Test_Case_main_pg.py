@@ -92,34 +92,36 @@ TIMEOUT = 15_000  # ms
 
 def _go_main(page: Page) -> None:
     """
-    메인 페이지 이동 + Lazy Load 트리거
-    ─────────────────────────────────────────────
-    GitHub Actions Headless 환경 대응:
-      - 올리브영 메인은 스크롤 기반 지연 로딩(Intersection Observer)
-      - domcontentloaded 후 뷰포트 밖 영역은 DOM에 없거나 숨겨짐
-      - 점진적 스크롤로 '인기 행사만 모았어요!' 영역까지 강제 로드
+    메인 페이지 이동 + 콘텐츠 로드 확인
+    ─────────────────────────────────────────────────────────────────────
+    봇 감지 차단 시: 페이지는 로드되나 실제 콘텐츠 영역이 비어있음
+    → #Container 존재 여부로 정상 로드 판별
+    → 이후 점진적 스크롤로 lazy load 트리거 (최대 15회)
     """
     page.goto(OLIVEYOUNG_MAIN_URL, wait_until="domcontentloaded", timeout=30_000)
-    page.wait_for_load_state("networkidle", timeout=20_000)
 
-    # 점진적 스크롤: 뷰포트 단위로 내려가며 lazy load 트리거
-    # h3.main_sub_tit 이 DOM에 attached 될 때까지 반복 (최대 10회)
-    for _ in range(10):
-        attached = page.evaluate(
+    # networkidle 대신 실제 콘텐츠 컨테이너 대기 (더 빠르고 신뢰성 높음)
+    try:
+        page.wait_for_selector("#Container", timeout=15_000)
+    except Exception:
+        # #Container 없으면 차단 페이지 가능성 — 그래도 진행 (이후 케이스에서 FAIL)
+        page.wait_for_timeout(3_000)
+
+    # 점진적 스크롤로 Lazy Load 트리거
+    # h3.main_sub_tit 가 attached 될 때까지 반복
+    for step in range(15):
+        found = page.evaluate(
             "() => !!document.querySelector('h3.main_sub_tit')"
         )
-        if attached:
+        if found:
             break
-        page.evaluate("() => window.scrollBy(0, window.innerHeight)")
-        page.wait_for_timeout(500)
-    else:
-        # 10회 시도 후에도 없으면 강제로 맨 아래까지 스크롤
-        page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(1000)
+        # 뷰포트 1배씩 내려가며 Intersection Observer 트리거
+        page.evaluate(f"() => window.scrollBy(0, window.innerHeight)")
+        page.wait_for_timeout(300)
 
-    # 스크롤 위치 초기화 (슬라이더 진입 전 상단으로)
+    # 스크롤 초기화
     page.evaluate("() => window.scrollTo(0, 0)")
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(500)
 
 
 def _scroll_to_section(page: Page) -> None:

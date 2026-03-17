@@ -3,6 +3,7 @@ conftest.py
 ─────────────────────────────────────────────────────────────────────────────
 pytest 공통 픽스처 및 카카오톡 결과 전송 훅
  - 브라우저: Chromium (PC Chrome DevTools → iPhone 14 Pro Max 에뮬레이션)
+ - 봇 감지 우회: navigator.webdriver 제거 + 실제 Chrome UA + 스텔스 args
  - 카카오톡: 전체 테스트 완료 후 나에게 보내기로 결과 전송
 ─────────────────────────────────────────────────────────────────────────────
 """
@@ -25,18 +26,33 @@ from playwright.sync_api import (
 )
 
 # ── 상수 ──────────────────────────────────────────────────────────────────
-# iPhone 14 Pro Max 디바이스 스펙 (Playwright 내장 디바이스 없으므로 수동 정의)
+# iPhone 14 Pro Max 디바이스 스펙
+# ※ User-Agent: Safari가 아닌 Chrome Mobile로 변경
+#   올리브영은 Safari UA에서도 동작하나, Chrome UA가 봇 감지 우회에 더 유리
 IPHONE_14_PRO_MAX = {
     "viewport":           {"width": 430, "height": 932},
     "device_scale_factor": 3,
     "is_mobile":          True,
     "has_touch":          True,
     "user_agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-        "Version/17.0 Mobile/15E148 Safari/604.1"
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Mobile Safari/537.36"
     ),
 }
+
+# 봇 감지 우회를 위한 Chromium 런치 인자
+# - disable-blink-features=AutomationControlled: navigator.webdriver=true 제거
+# - 실제 브라우저와 동일한 렌더링 환경 구성
+STEALTH_ARGS = [
+    "--disable-blink-features=AutomationControlled",  # webdriver 플래그 제거 (핵심)
+    "--disable-infobars",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",                        # CI 환경 메모리 제한 대응
+    "--disable-gpu",
+    "--window-size=430,932",
+]
 
 KST = timezone(timedelta(hours=9))
 
@@ -56,8 +72,15 @@ def playwright_instance() -> Generator[Playwright, None, None]:
 
 @pytest.fixture(scope="session")
 def browser(playwright_instance: Playwright) -> Generator[Browser, None, None]:
-    """Headless Chromium — CI 환경 대응"""
-    br = playwright_instance.chromium.launch(headless=True)
+    """
+    Headless Chromium + 봇 감지 우회 설정
+    - AutomationControlled 비활성화로 navigator.webdriver 플래그 제거
+    - CI 환경(GitHub Actions) 안정성을 위한 샌드박스 비활성화
+    """
+    br = playwright_instance.chromium.launch(
+        headless=True,
+        args=STEALTH_ARGS,
+    )
     yield br
     br.close()
 
@@ -65,10 +88,36 @@ def browser(playwright_instance: Playwright) -> Generator[Browser, None, None]:
 @pytest.fixture(scope="session")
 def context(browser: Browser) -> Generator[BrowserContext, None, None]:
     """
-    iPhone 14 Pro Max 에뮬레이션 컨텍스트
-    PC Chrome DevTools > 디바이스 에뮬레이션과 동일한 조건
+    iPhone 14 Pro Max 에뮬레이션 컨텍스트 + 봇 감지 우회
+    - init_script: navigator.webdriver 속성을 undefined로 덮어씀
+    - extra_http_headers: 실제 브라우저와 동일한 Accept-Language 설정
     """
-    ctx = browser.new_context(**IPHONE_14_PRO_MAX)
+    ctx = browser.new_context(
+        **IPHONE_14_PRO_MAX,
+        extra_http_headers={
+            # 실제 모바일 크롬과 동일한 헤더 구성
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;"
+                "q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+            ),
+        },
+    )
+    # navigator.webdriver = undefined 로 덮어써서 자동화 감지 차단
+    ctx.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined,
+        });
+        // chrome 객체 존재 여부 (headless에서 없으면 봇으로 탐지)
+        window.chrome = { runtime: {} };
+        // permissions 쿼리 결과 정상화
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications'
+                ? Promise.resolve({ state: Notification.permission })
+                : originalQuery(parameters)
+        );
+    """)
     yield ctx
     ctx.close()
 
