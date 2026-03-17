@@ -91,24 +91,51 @@ TIMEOUT = 15_000  # ms
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _go_main(page: Page) -> None:
-    """메인 페이지 이동 + 기본 로딩 대기"""
+    """
+    메인 페이지 이동 + Lazy Load 트리거
+    ─────────────────────────────────────────────
+    GitHub Actions Headless 환경 대응:
+      - 올리브영 메인은 스크롤 기반 지연 로딩(Intersection Observer)
+      - domcontentloaded 후 뷰포트 밖 영역은 DOM에 없거나 숨겨짐
+      - 점진적 스크롤로 '인기 행사만 모았어요!' 영역까지 강제 로드
+    """
     page.goto(OLIVEYOUNG_MAIN_URL, wait_until="domcontentloaded", timeout=30_000)
     page.wait_for_load_state("networkidle", timeout=20_000)
+
+    # 점진적 스크롤: 뷰포트 단위로 내려가며 lazy load 트리거
+    # h3.main_sub_tit 이 DOM에 attached 될 때까지 반복 (최대 10회)
+    for _ in range(10):
+        attached = page.evaluate(
+            "() => !!document.querySelector('h3.main_sub_tit')"
+        )
+        if attached:
+            break
+        page.evaluate("() => window.scrollBy(0, window.innerHeight)")
+        page.wait_for_timeout(500)
+    else:
+        # 10회 시도 후에도 없으면 강제로 맨 아래까지 스크롤
+        page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_timeout(1000)
+
+    # 스크롤 위치 초기화 (슬라이더 진입 전 상단으로)
+    page.evaluate("() => window.scrollTo(0, 0)")
+    page.wait_for_timeout(300)
 
 
 def _scroll_to_section(page: Page) -> None:
     """
-    '인기 행사만 모았어요!' 섹션까지 스크롤
-    DOM 확정: h3.main_sub_tit (div.main_plan_banner.ty02 하위)
-    1차: h3.main_sub_tit 직접 탐색
-    2차: JS로 div.main_plan_banner.ty02 스크롤 폴백
+    '인기 행사만 모았어요!' 섹션 스크롤 + slick 초기화 완료 대기
+    ─────────────────────────────────────────────────────────────
+    1단계: h3.main_sub_tit 스크롤
+    2단계: slick-initialized 클래스 확인 (슬라이더 JS 초기화 완료)
+    3단계: 포차코 카드(data-banner-name*='포차코') DOM 진입 대기
     """
+    # 1단계: 섹션 헤더로 스크롤
     try:
         section = page.locator(SEL_SECTION_HEADER).first
-        section.wait_for(state="attached", timeout=10_000)
+        section.wait_for(state="attached", timeout=15_000)
         section.scroll_into_view_if_needed(timeout=10_000)
     except Exception:
-        # 폴백: JS로 섹션 래퍼 직접 스크롤
         page.evaluate("""
             () => {
                 const el = document.querySelector('div.main_plan_banner.ty02')
@@ -117,53 +144,103 @@ def _scroll_to_section(page: Page) -> None:
                 if (el) el.scrollIntoView({behavior: 'instant', block: 'center'});
             }
         """)
-    page.wait_for_timeout(1000)  # slick 슬라이더 렌더링 안정화
+
+    # 2단계: slick 초기화 완료 대기
+    # slick.js는 DOM 삽입 후 JS가 초기화하면서 slick-initialized 클래스 추가
+    try:
+        page.wait_for_selector(
+            "#mainPlanSlider.slick-initialized",
+            timeout=10_000,
+        )
+    except Exception:
+        pass  # 이미 초기화된 경우 또는 구조 변경 시 무시
+
+    # 3단계: 포차코 카드가 DOM에 존재할 때까지 대기 (최대 10초)
+    try:
+        page.wait_for_selector(
+            "a[data-banner-name*='포차코']",
+            timeout=10_000,
+        )
+    except Exception:
+        pass  # 행사 종료 등으로 포차코 카드 없는 경우 — 이후 케이스에서 FAIL 처리
+
+    page.wait_for_timeout(500)  # 슬라이더 위치 안정화
 
 
 def _get_pochacho_card(page: Page):
     """
     포차코 행사 카드의 plan_banner > a 로케이터 반환
-    DOM 확정: data-banner-name="미쟝센X포차코"
-    slick-current(활성) → slick-active → cloned 제외 순서로 탐색
+    ※ count()는 Headless에서 대기 없이 즉시 반환 → JS evaluate로 DOM 직접 확인
     """
-    # 1순위: slick-current (현재 활성 슬라이드)
-    loc = page.locator(
-        ".slider_unit.slick-current a[data-banner-name*='포차코']"
-    )
-    if loc.count() > 0:
-        return loc.first
-    # 2순위: slick-active (뷰포트 내)
-    loc = page.locator(
-        ".slider_unit.slick-active a[data-banner-name*='포차코']"
-    )
-    if loc.count() > 0:
-        return loc.first
-    # 3순위: cloned 제외 전체
-    return page.locator(
-        ".slider_unit:not(.slick-cloned) a[data-banner-name*='포차코']"
-    ).first
+    # JS로 DOM 존재 여부 즉시 확인 후 우선순위대로 반환
+    selector = page.evaluate("""
+        () => {
+            // 1순위: slick-current (현재 활성)
+            if (document.querySelector(
+                '.slider_unit.slick-current a[data-banner-name*="포차코"]'))
+                return 'current';
+            // 2순위: slick-active (뷰포트 내)
+            if (document.querySelector(
+                '.slider_unit.slick-active a[data-banner-name*="포차코"]'))
+                return 'active';
+            // 3순위: cloned 제외 전체
+            if (document.querySelector(
+                '.slider_unit:not(.slick-cloned) a[data-banner-name*="포차코"]'))
+                return 'notcloned';
+            return 'any';
+        }
+    """)
+
+    if selector == 'current':
+        return page.locator(
+            ".slider_unit.slick-current a[data-banner-name*='포차코']"
+        ).first
+    if selector == 'active':
+        return page.locator(
+            ".slider_unit.slick-active a[data-banner-name*='포차코']"
+        ).first
+    if selector == 'notcloned':
+        return page.locator(
+            ".slider_unit:not(.slick-cloned) a[data-banner-name*='포차코']"
+        ).first
+    # 최후 폴백: 모든 포차코 링크 중 첫 번째
+    return page.locator("a[data-banner-name*='포차코']").first
 
 
 def _get_pochacho_slider_unit(page: Page):
     """
     포차코 카드가 속한 slider_unit div 반환 (상품 목록 접근용)
-    DOM: div.slider_unit.slick-current.slick-active (data-slick-index="0")
+    ※ _get_pochacho_card()와 동일한 우선순위 전략 적용
     """
-    # 1순위: slick-current
-    unit = page.locator(
-        ".slider_unit.slick-current:has(a[data-banner-name*='포차코'])"
-    )
-    if unit.count() > 0:
-        return unit.first
-    # 2순위: slick-active
-    unit = page.locator(
-        ".slider_unit.slick-active:has(a[data-banner-name*='포차코'])"
-    )
-    if unit.count() > 0:
-        return unit.first
-    # 3순위: cloned 제외
+    selector = page.evaluate("""
+        () => {
+            if (document.querySelector(
+                '.slider_unit.slick-current:has(a[data-banner-name*="포차코"])'))
+                return 'current';
+            if (document.querySelector(
+                '.slider_unit.slick-active:has(a[data-banner-name*="포차코"])'))
+                return 'active';
+            if (document.querySelector(
+                '.slider_unit:not(.slick-cloned):has(a[data-banner-name*="포차코"])'))
+                return 'notcloned';
+            return 'any';
+        }
+    """)
+
+    if selector == 'current':
+        return page.locator(
+            ".slider_unit.slick-current:has(a[data-banner-name*='포차코'])"
+        ).first
+    if selector == 'active':
+        return page.locator(
+            ".slider_unit.slick-active:has(a[data-banner-name*='포차코'])"
+        ).first
+    if selector == 'notcloned':
+        return page.locator(
+            ".slider_unit:not(.slick-cloned):has(a[data-banner-name*='포차코'])"
+        ).first
     return page.locator(
-        ".slider_unit:not(.slick-cloned):has(a[data-banner-name*='포차코'])"
+        "div:has(> div.plan_top > div.plan_banner a[data-banner-name*='포차코'])"
     ).first
 
 
