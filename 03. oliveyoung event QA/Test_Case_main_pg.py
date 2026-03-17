@@ -8,7 +8,7 @@ Test_Case_main_pg.py
 
 공통 조건:
   - PC Chrome DevTools → iPhone 14 Pro Max 에뮬레이션 (conftest.py)
-  - 스크롤 복원 허용 오차: 0px (완전 일치)
+  - 스크롤 복원 허용 오차: ±50px
 ─────────────────────────────────────────────────────────────────────────────
 """
 
@@ -26,22 +26,30 @@ from Test_Scenario import (
 )
 
 # ── 셀렉터 상수 ───────────────────────────────────────────────────────────
-# ※ 실제 DOM 분석 기반 (2025-03 올리브영 메인 HTML 확인)
+# ※ 실제 DOM 확정 (개발자도구 + HTML 전문 분석)
+#
+# 섹션 전체 래퍼:
+#   <div class="main_plan_banner ty02">
+#     <h3 class="main_sub_tit"><strong>인기 행사만 모았어요!</strong></h3>
+#     <div class="banner_wrap"> ... </div>
+#   </div>
 
-# 섹션 헤더: <h3><strong>인기 행사만 모았어요!</strong></h3>
-SEL_SECTION_HEADER   = "h3:has(strong:text('인기 행사만 모았어요!'))"
+# 섹션 헤더: h3.main_sub_tit (class명 확정)
+SEL_SECTION_HEADER   = "h3.main_sub_tit"
+
+# 섹션 전체 래퍼 (슬라이더 포함 영역)
+SEL_SECTION_WRAP     = "div.main_plan_banner.ty02"
 
 # 슬라이더 전체 컨테이너
 SEL_SLIDER           = "#mainPlanSlider"
 
 # 포차코 카드 식별:
-#   data-attr 에 "미쟝센X포차코" 포함 OR data-banner-name="미쟝센X포차코"
-#   실제 슬라이드 단위: div.slider_unit (slick-cloned 제외 → aria-hidden=false 기준)
-SEL_EVENT_CARD       = ".slider_unit:not(.slick-cloned) .plan_banner a[data-banner-name*='포차코']"
+#   data-banner-name="미쟝센X포차코" 확정
+SEL_EVENT_CARD       = "a[data-banner-name*='포차코']"
 
 # 행사 배너 이미지:
-#   div.plan_banner { background-image: url(...) } → CSS background 방식
-#   ※ <img> 태그 없음! → 부모 div.plan_banner 의 style 속성으로 검증
+#   <div class="plan_banner" style="background-image:url(...)">
+#   ※ <img> 없음 — CSS background-image 방식
 SEL_PLAN_BANNER_DIV  = ".plan_banner"
 
 # 행사 타이틀: <strong class="tit">포차코도 탐낸</strong>
@@ -54,25 +62,25 @@ SEL_EVENT_SUBTITLE   = ".plan_banner a span.desc"
 #   href="javascript:common.link.movePlanShop('500000100017555', ...)"
 SEL_EVENT_LINK       = ".plan_banner a"
 
-# 상품 래퍼: <li> > <div class="prd_info">
+# 상품 래퍼: ul.cate_prd_list > li > div.prd_info
 SEL_PRODUCT_WRAP     = "ul.cate_prd_list li div.prd_info"
 
-# 상품 이미지: <a class="prd_thumb"> > <img>
+# 상품 이미지: a.prd_thumb > img (실제 <img> 태그 존재)
 SEL_PRODUCT_IMG      = "a.prd_thumb img"
 
-# 상품명: <p class="tx_name">
+# 상품명: p.tx_name
 SEL_PRODUCT_NAME     = "p.tx_name"
 
-# 브랜드명: <span class="tx_brand">
+# 브랜드명: span.tx_brand
 SEL_BRAND_NAME       = "span.tx_brand"
 
-# 태그(뱃지): <p class="prd_flag"> > <span class="icon_flag ...">
+# 태그: p.prd_flag > span.icon_flag
 SEL_TAG              = "p.prd_flag span.icon_flag"
 
-# 정가: <span class="tx_org"> — 취소선+회색은 CSS로 적용
+# 정가: span.tx_org (취소선+회색 CSS로 적용)
 SEL_ORIGINAL_PRICE   = "p.prd_price span.tx_org"
 
-# 할인가: <span class="tx_cur"> — 붉은색은 CSS로 적용
+# 할인가: span.tx_cur (붉은색 CSS로 적용)
 SEL_DISCOUNT_PRICE   = "p.prd_price span.tx_cur"
 
 TIMEOUT = 15_000  # ms
@@ -91,28 +99,69 @@ def _go_main(page: Page) -> None:
 def _scroll_to_section(page: Page) -> None:
     """
     '인기 행사만 모았어요!' 섹션까지 스크롤
-    DOM: <h3><strong>인기 행사만 모았어요!</strong></h3>
+    DOM 확정: h3.main_sub_tit (div.main_plan_banner.ty02 하위)
+    1차: h3.main_sub_tit 직접 탐색
+    2차: JS로 div.main_plan_banner.ty02 스크롤 폴백
     """
-    section = page.locator(SEL_SECTION_HEADER).first
-    section.scroll_into_view_if_needed(timeout=TIMEOUT)
-    page.wait_for_timeout(800)   # 슬라이더(slick) 렌더링 안정화
+    try:
+        section = page.locator(SEL_SECTION_HEADER).first
+        section.wait_for(state="attached", timeout=10_000)
+        section.scroll_into_view_if_needed(timeout=10_000)
+    except Exception:
+        # 폴백: JS로 섹션 래퍼 직접 스크롤
+        page.evaluate("""
+            () => {
+                const el = document.querySelector('div.main_plan_banner.ty02')
+                       || document.querySelector('#mainPlanSlider')
+                       || document.querySelector('.banner_wrap');
+                if (el) el.scrollIntoView({behavior: 'instant', block: 'center'});
+            }
+        """)
+    page.wait_for_timeout(1000)  # slick 슬라이더 렌더링 안정화
 
 
 def _get_pochacho_card(page: Page):
     """
-    포차코 행사 카드의 plan_banner a 로케이터 반환
-    DOM: .slider_unit:not(.slick-cloned) 내 data-banner-name에 '포차코' 포함
-    slick-cloned 슬라이드는 동일 DOM이 복제되므로 반드시 제외
+    포차코 행사 카드의 plan_banner > a 로케이터 반환
+    DOM 확정: data-banner-name="미쟝센X포차코"
+    slick-current(활성) → slick-active → cloned 제외 순서로 탐색
     """
-    return page.locator(SEL_EVENT_CARD).first
+    # 1순위: slick-current (현재 활성 슬라이드)
+    loc = page.locator(
+        ".slider_unit.slick-current a[data-banner-name*='포차코']"
+    )
+    if loc.count() > 0:
+        return loc.first
+    # 2순위: slick-active (뷰포트 내)
+    loc = page.locator(
+        ".slider_unit.slick-active a[data-banner-name*='포차코']"
+    )
+    if loc.count() > 0:
+        return loc.first
+    # 3순위: cloned 제외 전체
+    return page.locator(
+        ".slider_unit:not(.slick-cloned) a[data-banner-name*='포차코']"
+    ).first
 
 
 def _get_pochacho_slider_unit(page: Page):
     """
-    포차코 카드가 속한 slider_unit div 반환
-    상품 목록(ul.cate_prd_list) 접근 시 사용
+    포차코 카드가 속한 slider_unit div 반환 (상품 목록 접근용)
+    DOM: div.slider_unit.slick-current.slick-active (data-slick-index="0")
     """
-    # plan_banner a 의 조상 slider_unit 을 xpath로 탐색
+    # 1순위: slick-current
+    unit = page.locator(
+        ".slider_unit.slick-current:has(a[data-banner-name*='포차코'])"
+    )
+    if unit.count() > 0:
+        return unit.first
+    # 2순위: slick-active
+    unit = page.locator(
+        ".slider_unit.slick-active:has(a[data-banner-name*='포차코'])"
+    )
+    if unit.count() > 0:
+        return unit.first
+    # 3순위: cloned 제외
     return page.locator(
         ".slider_unit:not(.slick-cloned):has(a[data-banner-name*='포차코'])"
     ).first
@@ -164,11 +213,19 @@ def _verify_scroll_restored(page: Page, expected_y: int, tolerance: int = 50) ->
 class TestTC01SectionVisibility:
 
     def test_tc01_section_is_visible(self, page: Page):
-        """TC-01 | '인기 행사만 모았어요!' 섹션 노출 확인"""
+        """
+        TC-01 | '인기 행사만 모았어요!' 섹션 노출 확인
+        DOM 확정: <h3 class="main_sub_tit"><strong>인기 행사만 모았어요!</strong></h3>
+        → h3.main_sub_tit 노출 + 텍스트 포함 여부 검증
+        """
         _go_main(page)
-        # DOM: <h3><strong>인기 행사만 모았어요!</strong></h3>
         section = page.locator(SEL_SECTION_HEADER).first
         expect(section).to_be_visible(timeout=TIMEOUT)
+        # 텍스트 내용 추가 검증
+        text = (section.text_content() or "").strip()
+        assert "인기 행사만 모았어요" in text, (
+            f"h3.main_sub_tit 텍스트 불일치 — 실제: '{text}'"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
