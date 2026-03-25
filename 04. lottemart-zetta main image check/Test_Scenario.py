@@ -14,6 +14,15 @@ WELCOME_TITLE = "롯데마트 제타에 오신걸 환영합니다."
 # 상품 상세 검증 대상 섹션
 PRODUCT_SECTION_TITLE = "이번 주 행사상품을 만나보세요"
 MIN_PRODUCT_CARD_COUNT = 5
+MAX_PRODUCT_LOG_COUNT = 10
+
+# 행사 배너 수집 대상 섹션 (운영 구조상 배너형 타일이 자주 노출되는 영역)
+BANNER_SECTION_TITLES = [
+    "쉽고 편리한 스마트 장보기",
+    "어디서도 볼 수 없는 알뜰 쇼핑 찬스",
+    "매일 새로운 스마트 장보기",
+]
+MAX_BANNER_LOG_COUNT = 10
 
 # 행사 유형(요청사항 고정 분류)
 PROMOTION_TYPES = [
@@ -33,7 +42,7 @@ SCENARIOS = [
     },
     {
         "id": "TC-02",
-        "summary": "상품 노출 영역에서 상품 카드(이미지/상품명/금액) 노출 확인",
+        "summary": "상품 노출 영역에서 상품 카드(이미지/상품명/상품코드/금액/할인금액) 확인",
         "type": "Functional / UI Visibility / Data Validation",
         "priority": "High",
     },

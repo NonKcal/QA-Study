@@ -66,4 +66,6 @@ jobs:
           path: |
             04. lottemart-zetta main image check/pytest-report.xml
             04. lottemart-zetta main image check/artifacts/*.png
+            04. lottemart-zetta main image check/artifacts/*.json
+            04. lottemart-zetta main image check/artifacts/*.md
           retention-days: 7

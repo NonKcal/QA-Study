@@ -6,6 +6,7 @@ pytest 공통 픽스처 + 카카오톡 결과 전송 훅.
   - 디바이스 모드: iPhone 14 Pro Max 에뮬레이션
   - 결과 전송: 카카오 나에게 보내기
   - 토큰 만료 대응: 전송 실패(401 등) 시 refresh token으로 자동 재발급 후 재시도
+  - 상세 관찰 데이터(상품/행사 배너) 집계 및 아티팩트 생성
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import requests
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
 
 from kakao_oauth import refresh_access_token
+from reporter import build_console_lines, build_count_line, write_artifacts
 
 
 KST = timezone(timedelta(hours=9))
@@ -111,7 +113,7 @@ def _collect_result(item: pytest.Item, call: pytest.CallInfo) -> None:
         {
             "name": item.name,
             "status": status,
-            "reason": textwrap.shorten(reason, width=160, placeholder="..."),
+            "reason": textwrap.shorten(reason, width=180, placeholder="..."),
         }
     )
 
@@ -146,6 +148,7 @@ def _build_result_message() -> str:
         "[롯데마트 제타] 메인 노출 자동화 결과",
         f"실행 시각: {now}",
         f"총 {total}건 | PASS {passed} | FAIL {failed}",
+        build_count_line(),
         "-" * 35,
     ]
 
@@ -186,9 +189,7 @@ def _send_kakao_message(access_token: str, message: str) -> requests.Response:
 
 
 def _refresh_token_for_retry() -> str | None:
-    """
-    카카오 전송 실패 시 토큰을 즉시 재발급해 같은 실행 내에서 재시도한다.
-    """
+    """카카오 전송 실패 시 토큰을 즉시 재발급해 같은 실행 내에서 재시도한다."""
     rest_api_key = os.getenv("KAKAO_REST_API_KEY", "").strip()
     client_secret = os.getenv("KAKAO_CLIENT_SECRET", "").strip()
     refresh_token = os.getenv("KAKAO_REFRESH_TOKEN", "").strip()
@@ -248,6 +249,14 @@ def pytest_sessionfinish(session, exitstatus):
     if not _results:
         return
 
+    # 상세 관찰 데이터(JSON/MD) 아티팩트 생성
+    write_artifacts(ARTIFACT_DIR)
+
     message = _build_result_message()
-    print("\n" + message)  # Actions 로그에서도 바로 확인 가능
+    print("\n" + message)
+
+    # 상세 라인을 Actions 로그에 출력
+    detail_lines = build_console_lines(max_products=30, max_banners=30)
+    print("\n" + "\n".join(detail_lines))
+
     _notify_to_kakao(message)

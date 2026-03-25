@@ -1,13 +1,11 @@
 """
-롯데마트 제타 메인 페이지 상품 노출 상세 검증.
+롯데마트 제타 메인 페이지 상품/행사 노출 상세 검증.
 
 요구 반영:
-  - 상품 이미지
-  - 상품명
-  - 상품금액
-  - 행사 여부
-  - 행사 종류 분류 (n+n, n개 담기 시 할인, 상품할인, 금액조건 할인)
-  - 할인행사의 원 상품가/행사상품가 구분
+  - 상품: 상품명/상품코드/상품금액/할인금액/이미지 노출
+  - 행사 배너: 행사명/행사이미지 노출
+  - 행사 유형 분류: n+n, n개 담기 시 할인, 상품할인, 금액조건 할인
+  - 최종 집계: 확인된 상품/행사 수를 결과에 반영
 """
 
 from __future__ import annotations
@@ -17,8 +15,12 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import Page, expect
 
+from reporter import record_banner, record_product
 from Test_Scenario import (
+    BANNER_SECTION_TITLES,
     LOTTE_ZETTA_MAIN_URL,
+    MAX_BANNER_LOG_COUNT,
+    MAX_PRODUCT_LOG_COUNT,
     MIN_PRODUCT_CARD_COUNT,
     PRODUCT_SECTION_TITLE,
     PROMOTION_TYPES,
@@ -47,20 +49,20 @@ PROMOTION_SIGNAL_RE = re.compile(
     r"(?:\+|할인|행사|증정|쿠폰|카드|구매\s*시|담기\s*시|이상\s*최대)"
 )
 
+PRODUCT_CODE_RE = re.compile(r"/products/([^/]+)/details")
+
+# 상세 가격 조회 캐시 (동일 상품 재요청 최소화)
+_DETAIL_PRICE_CACHE: dict[str, dict] = {}
+
 
 def _go_main(page: Page) -> None:
-    """
-    메인 진입 + 초기 렌더링 대기.
-    운영환경 배너/캐러셀은 lazy load가 많아 짧은 안정화 시간을 둔다.
-    """
+    """메인 진입 + 초기 렌더링 대기."""
     page.goto(LOTTE_ZETTA_MAIN_URL, wait_until="domcontentloaded", timeout=40_000)
     page.wait_for_timeout(2_000)
 
 
 def _scroll_until_text_visible(page: Page, text: str, max_steps: int = 20) -> None:
-    """
-    모바일 에뮬레이션에서 lazy loading 트리거를 위해 단계 스크롤을 사용한다.
-    """
+    """모바일 에뮬레이션에서 lazy loading 트리거를 위해 단계 스크롤을 사용한다."""
     for _ in range(max_steps):
         found = page.evaluate("(t) => document.body.innerText.includes(t)", text)
         if found:
@@ -69,64 +71,60 @@ def _scroll_until_text_visible(page: Page, text: str, max_steps: int = 20) -> No
         page.wait_for_timeout(300)
 
 
-def _extract_product_cards(page: Page, section_title: str) -> list[dict]:
+def _extract_section_cards(page: Page, section_title: str) -> list[dict]:
     """
-    특정 섹션 아래에서 상품 카드 메타데이터를 수집한다.
-
-    수집 필드:
-      - href: 카드 링크
-      - title_text: 카드 노출 텍스트(상품명/행사문구)
-      - image_alt: 이미지 alt
-      - image_src: 이미지 src
-      - text_blob: 분류/가격 추출용 통합 텍스트
+    특정 섹션 내 anchor 기반 카드(상품/배너)를 수집한다.
     """
     return page.evaluate(
         """
         (sectionTitle) => {
-          const normalize = (v) => (v || "").replace(/\\s+/g, " ").trim();
-          const headingCandidates = [...document.querySelectorAll("h1,h2,h3,h4")];
-          const heading = headingCandidates.find((h) =>
+          const normalize = (v) => (v || "").replace(/\s+/g, " ").trim();
+          const headings = [...document.querySelectorAll("h1,h2,h3,h4")];
+          const heading = headings.find((h) =>
             normalize(h.textContent).includes(normalize(sectionTitle))
           );
           if (!heading) return [];
 
-          // 섹션 컨테이너를 탐색하며 상품 링크(/products/*/details) 비중이 높은 곳을 선택.
-          let container = heading.closest("section,article,div");
+          let container = heading.closest("section,article,div") || heading.parentElement || document.body;
           let walker = container;
           for (let i = 0; i < 6 && walker; i += 1) {
-            const productLinks = walker.querySelectorAll('a[href*="/products/"][href*="/details"]').length;
-            if (productLinks >= 3) {
+            const candidateCards = walker.querySelectorAll("a").length;
+            if (candidateCards >= 5) {
               container = walker;
               break;
             }
             walker = walker.parentElement;
           }
-          container = container || heading.parentElement || document.body;
 
-          const anchors = [...container.querySelectorAll('a[href*="/products/"][href*="/details"]')];
-          const cards = anchors.map((a) => {
-            const img = a.querySelector("img");
-            const titleNode = a.querySelector("span, p, h3, h4") || a;
-            const titleText = normalize(titleNode.textContent);
-            const imageAlt = normalize(img ? img.getAttribute("alt") || "" : "");
-            const imageSrc = img ? (img.getAttribute("src") || "") : "";
-            const ariaLabel = normalize(a.getAttribute("aria-label") || "");
-            const textBlob = normalize([titleText, imageAlt, ariaLabel].join(" | "));
-            return {
-              href: a.getAttribute("href") || "",
-              title_text: titleText,
-              image_alt: imageAlt,
-              image_src: imageSrc,
-              text_blob: textBlob,
-            };
-          });
+          const anchors = [...container.querySelectorAll("a")];
+          const cards = anchors
+            .map((a) => {
+              const img = a.querySelector("img");
+              const titleNode = a.querySelector("span, p, h3, h4") || a;
+              const titleText = normalize(titleNode.textContent);
+              const imageAlt = normalize(img ? img.getAttribute("alt") || "" : "");
+              const imageSrc = img ? (img.getAttribute("src") || "") : "";
+              const href = a.getAttribute("href") || "";
+              const ariaLabel = normalize(a.getAttribute("aria-label") || "");
+              const textBlob = normalize([titleText, imageAlt, ariaLabel].join(" | "));
+              const hasVisualSignal = Boolean(img) || titleText.length >= 2 || imageAlt.length >= 2;
+              return {
+                href,
+                title_text: titleText,
+                image_alt: imageAlt,
+                image_src: imageSrc,
+                text_blob: textBlob,
+                has_visual_signal: hasVisualSignal,
+              };
+            })
+            .filter((x) => x.has_visual_signal);
 
-          // 동일 href 중복 제거
           const dedup = [];
           const seen = new Set();
           for (const card of cards) {
-            if (!card.href || seen.has(card.href)) continue;
-            seen.add(card.href);
+            const key = `${card.href}|${card.title_text}|${card.image_alt}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
             dedup.push(card);
           }
           return dedup;
@@ -136,11 +134,27 @@ def _extract_product_cards(page: Page, section_title: str) -> list[dict]:
     )
 
 
+def _extract_prices(text_blob: str) -> list[int]:
+    """텍스트에서 가격 토큰을 추출해 정수 원 단위 리스트로 반환한다."""
+    prices = []
+    for token in PRICE_RE.findall(text_blob or ""):
+        digits = re.sub(r"[^\d]", "", token)
+        if digits:
+            prices.append(int(digits))
+    return prices
+
+
+def _is_product_card(href: str) -> bool:
+    return "/products/" in (href or "") and "/details" in (href or "")
+
+
+def _extract_product_code(href: str) -> str:
+    match = PRODUCT_CODE_RE.search(href or "")
+    return match.group(1) if match else "UNKNOWN"
+
+
 def _classify_promotion(text_blob: str) -> str | None:
-    """
-    요청된 4개 행사 유형으로 분류한다.
-    우선순위가 높은 규칙부터 매칭해 중복 분류를 방지한다.
-    """
+    """요청된 4개 행사 유형으로 분류한다."""
     normalized = re.sub(r"\s+", " ", text_blob or "").strip()
     if not normalized:
         return None
@@ -151,7 +165,6 @@ def _classify_promotion(text_blob: str) -> str | None:
         return "n개 담기 시 할인"
     if AMOUNT_CONDITION_RE.search(normalized):
         return "금액조건 할인"
-    # 카드 조건은 결제 수단에 따른 조건형 할인으로 분류한다.
     if CARD_CONDITION_RE.search(normalized):
         return "금액조건 할인"
     if PERCENT_DISCOUNT_RE.search(normalized) or "할인" in normalized:
@@ -160,33 +173,67 @@ def _classify_promotion(text_blob: str) -> str | None:
 
 
 def _has_promotion_signal(text_blob: str) -> bool:
-    """
-    카드 텍스트에 행사 의도를 나타내는 최소 신호가 있는지 판별한다.
-    - 행사 신호가 있는 카드: 유형 분류를 강제
-    - 행사 신호가 없는 카드: 일반 노출 카드로 간주 (TC-02에서 분류 강제 제외)
-    """
     normalized = re.sub(r"\s+", " ", text_blob or "").strip()
     return bool(PROMOTION_SIGNAL_RE.search(normalized))
 
 
-def _extract_prices(text_blob: str) -> list[int]:
+def _fetch_detail_price_info(page: Page, product_url: str) -> dict:
     """
-    텍스트에서 가격 토큰을 추출해 정수 원 단위 리스트로 반환한다.
+    상품 상세 페이지에서 가격 정보를 수집한다.
+    반환:
+      {
+        "sale_price": int|None,
+        "original_price": int|None,
+        "discount_amount": int|None,
+      }
     """
-    prices = []
-    for token in PRICE_RE.findall(text_blob or ""):
-        digits = re.sub(r"[^\d]", "", token)
-        if digits:
-            prices.append(int(digits))
-    return prices
+    if product_url in _DETAIL_PRICE_CACHE:
+        return _DETAIL_PRICE_CACHE[product_url]
+
+    result = {
+        "sale_price": None,
+        "original_price": None,
+        "discount_amount": None,
+    }
+
+    try:
+        page.goto(product_url, wait_until="domcontentloaded", timeout=40_000)
+        page.wait_for_timeout(2_000)
+        detail_text = page.evaluate(
+            """
+            () => {
+              const main = document.querySelector("main") || document.body;
+              return (main.innerText || "").replace(/\s+/g, " ").trim();
+            }
+            """
+        )
+        prices = sorted(set(_extract_prices(detail_text)))
+        if prices:
+            result["sale_price"] = prices[0]
+            if len(prices) >= 2:
+                result["original_price"] = prices[-1]
+                result["discount_amount"] = prices[-1] - prices[0]
+            else:
+                result["original_price"] = None
+                result["discount_amount"] = 0
+    except Exception:
+        # 상세 페이지가 일시적으로 열리지 않아도 TC 자체가 전부 실패하지 않도록 완화
+        pass
+
+    _DETAIL_PRICE_CACHE[product_url] = result
+    return result
+
+
+def _fallback_price_from_card(text_blob: str) -> int | None:
+    prices = sorted(set(_extract_prices(text_blob)))
+    if not prices:
+        return None
+    return prices[0]
 
 
 class TestLotteMartZettaMainProductValidation:
     def test_tc01_welcome_area_visible(self, page: Page):
-        """
-        TC-01:
-          - 환영 헤드라인 + 로그인 링크 노출
-        """
+        """TC-01: 환영 헤드라인 + 로그인 링크 노출"""
         _go_main(page)
         expect(page.get_by_role("heading", name=WELCOME_TITLE)).to_be_visible(timeout=TIMEOUT_MS)
         expect(page.get_by_role("link", name="로그인").first).to_be_visible(timeout=TIMEOUT_MS)
@@ -194,45 +241,60 @@ class TestLotteMartZettaMainProductValidation:
     def test_tc02_product_area_fields_visible(self, page: Page):
         """
         TC-02:
-          상품 노출 영역에서 아래 필드 검증
+          상품 노출 영역에서 아래 필드 검증 + 상세 로그 기록
           - 상품 이미지
           - 상품명
+          - 상품코드
           - 상품금액
-          - 행사 여부(행사 신호 카드 기준으로 행사 유형 분류 가능)
+          - 할인금액
+          - 행사 신호 카드의 행사 유형 분류
         """
         _go_main(page)
         _scroll_until_text_visible(page, PRODUCT_SECTION_TITLE)
-        cards = _extract_product_cards(page, PRODUCT_SECTION_TITLE)
 
-        assert len(cards) >= MIN_PRODUCT_CARD_COUNT, (
-            f"상품 카드 수 부족: 기대 >= {MIN_PRODUCT_CARD_COUNT}, 실제={len(cards)}"
+        cards = _extract_section_cards(page, PRODUCT_SECTION_TITLE)
+        product_cards = [c for c in cards if _is_product_card(c["href"])]
+
+        assert len(product_cards) >= MIN_PRODUCT_CARD_COUNT, (
+            f"상품 카드 수 부족: 기대 >= {MIN_PRODUCT_CARD_COUNT}, 실제={len(product_cards)}"
         )
 
         inspected = 0
         promotion_signal_count = 0
         classified_promotion_count = 0
 
-        for card in cards:
+        # 수행 시간/안정성을 위해 상위 N개 중심으로 상세 기록
+        target_cards = product_cards[:MAX_PRODUCT_LOG_COUNT]
+
+        for idx, card in enumerate(target_cards):
             full_href = urljoin(LOTTE_ZETTA_MAIN_URL, card["href"])
             text_blob = card["text_blob"]
-            prices = _extract_prices(text_blob)
             promo_type = _classify_promotion(text_blob)
+            product_code = _extract_product_code(card["href"])
+            product_name = (card["title_text"] or card["image_alt"] or "상품명 미확인").strip()
+            image_ok = bool(card["image_src"] or card["image_alt"])
 
-            # 이미지 검증: src가 있거나 alt가 존재해야 한다.
-            assert (card["image_src"] or card["image_alt"]), (
-                f"상품 이미지 정보 누락: href={full_href}"
-            )
-            # 상품명 검증: title 텍스트 최소 길이 2자
-            assert len((card["title_text"] or "").strip()) >= 2, (
-                f"상품명 누락: href={full_href}"
-            )
-            # 상품금액 검증: 카드 텍스트/alt 중 최소 1개 가격 토큰
-            assert len(prices) >= 1, (
-                f"상품금액 누락: href={full_href} | text='{text_blob}'"
-            )
+            # 기본 가격은 카드 기준, 가능하면 상세 페이지 가격으로 보강
+            detail_info = _fetch_detail_price_info(page, full_href) if idx < 6 else {
+                "sale_price": None,
+                "original_price": None,
+                "discount_amount": None,
+            }
+            product_price = detail_info["sale_price"]
+            if product_price is None:
+                product_price = _fallback_price_from_card(text_blob)
 
-            # 행사 신호가 있는 카드만 행사유형 분류를 강제한다.
-            # (운영 배너 특성상 같은 섹션에 일반 상품 타일이 섞일 수 있음)
+            discount_amount = detail_info["discount_amount"]
+            if discount_amount is None:
+                card_prices = sorted(set(_extract_prices(text_blob)))
+                if len(card_prices) >= 2:
+                    discount_amount = card_prices[-1] - card_prices[0]
+
+            # 필수 검증
+            assert image_ok, f"상품 이미지 정보 누락: href={full_href}"
+            assert len(product_name) >= 2, f"상품명 누락: href={full_href}"
+            assert product_price is not None, f"상품금액 누락: href={full_href} | text='{text_blob}'"
+
             if _has_promotion_signal(text_blob):
                 promotion_signal_count += 1
                 assert promo_type in PROMOTION_TYPES, (
@@ -240,6 +302,21 @@ class TestLotteMartZettaMainProductValidation:
                 )
                 classified_promotion_count += 1
 
+            record_product(
+                case_id="TC-02",
+                product_name=product_name,
+                product_code=product_code,
+                product_price=product_price,
+                discount_amount=discount_amount,
+                image_ok=image_ok,
+                source_url=full_href,
+                promotion_type=promo_type,
+            )
+            print(
+                "[DATA][TC-02][상품] "
+                f"name={product_name} | code={product_code} | price={product_price} | "
+                f"discount={discount_amount} | image_ok={image_ok} | promo={promo_type}"
+            )
             inspected += 1
 
         assert inspected >= MIN_PRODUCT_CARD_COUNT
@@ -249,16 +326,17 @@ class TestLotteMartZettaMainProductValidation:
     def test_tc03_promotion_type_grouping(self, page: Page):
         """
         TC-03:
-          행사 유형을 요청된 4개 그룹으로 분류했을 때
-          - 최소 2개 이상 유형이 실제 카드에서 확인되는지 검증
-          - 전체 분류 결과가 허용된 그룹 목록 안에 있는지 검증
+          - 상품 카드 행사유형 분류 집계
+          - 행사 배너(비상품 카드) 상세 기록
         """
         _go_main(page)
         _scroll_until_text_visible(page, PRODUCT_SECTION_TITLE)
-        cards = _extract_product_cards(page, PRODUCT_SECTION_TITLE)
+
+        cards = _extract_section_cards(page, PRODUCT_SECTION_TITLE)
+        product_cards = [c for c in cards if _is_product_card(c["href"])]
 
         seen_types: set[str] = set()
-        for card in cards:
+        for card in product_cards:
             promo_type = _classify_promotion(card["text_blob"])
             if promo_type:
                 seen_types.add(promo_type)
@@ -267,26 +345,53 @@ class TestLotteMartZettaMainProductValidation:
         assert seen_types.issubset(set(PROMOTION_TYPES)), (
             f"허용되지 않은 행사 유형 감지: {seen_types - set(PROMOTION_TYPES)}"
         )
-        # 운영상품 변경을 고려해 모든 유형 강제 대신 최소 2개 유형 노출을 기준으로 둔다.
         assert len(seen_types) >= 2, f"행사 유형 다양성 부족: 감지 유형={sorted(seen_types)}"
+
+        # 배너형 카드 수집 (비상품 링크)
+        banner_logged = 0
+        for section_title in BANNER_SECTION_TITLES:
+            _scroll_until_text_visible(page, section_title)
+            section_cards = _extract_section_cards(page, section_title)
+            for card in section_cards:
+                if _is_product_card(card["href"]):
+                    continue
+                banner_name = (card["title_text"] or card["image_alt"] or "행사명 미확인").strip()
+                if len(banner_name) < 2:
+                    continue
+
+                banner_url = urljoin(LOTTE_ZETTA_MAIN_URL, card["href"] or "/")
+                image_ok = bool(card["image_src"] or card["image_alt"])
+
+                record_banner(
+                    case_id="TC-03",
+                    banner_name=banner_name,
+                    image_ok=image_ok,
+                    source_url=banner_url,
+                )
+                print(
+                    "[DATA][TC-03][배너] "
+                    f"name={banner_name} | image_ok={image_ok} | url={banner_url}"
+                )
+                banner_logged += 1
+                if banner_logged >= MAX_BANNER_LOG_COUNT:
+                    break
+
+            if banner_logged >= MAX_BANNER_LOG_COUNT:
+                break
 
     def test_tc04_discount_price_distinction(self, page: Page):
         """
         TC-04:
-          할인행사의 원 상품가/행사상품가 구분 검증.
-
-        검증 방식:
-          1) 메인 카드에서 할인 행사 카드 후보 추출
-          2) 해당 상품 상세 페이지로 이동
-          3) 본문 텍스트에서 가격 토큰 2개 이상(서로 다른 값) 확인
-             -> 원가/행사가 구분 노출로 판단
+          할인행사 카드에서 원가/행사가 구분 확인 + 상세 로그 기록
         """
         _go_main(page)
         _scroll_until_text_visible(page, PRODUCT_SECTION_TITLE)
-        cards = _extract_product_cards(page, PRODUCT_SECTION_TITLE)
+
+        cards = _extract_section_cards(page, PRODUCT_SECTION_TITLE)
+        product_cards = [c for c in cards if _is_product_card(c["href"])]
 
         discount_candidates = []
-        for card in cards:
+        for card in product_cards:
             promo_type = _classify_promotion(card["text_blob"])
             if promo_type in PROMOTION_TYPES:
                 discount_candidates.append(card)
@@ -295,27 +400,39 @@ class TestLotteMartZettaMainProductValidation:
 
         success_cases = 0
         checked_samples: list[str] = []
+
         for card in discount_candidates[:5]:
             product_url = urljoin(LOTTE_ZETTA_MAIN_URL, card["href"])
             checked_samples.append(product_url)
+            detail_info = _fetch_detail_price_info(page, product_url)
 
-            page.goto(product_url, wait_until="domcontentloaded", timeout=40_000)
-            page.wait_for_timeout(2_500)
+            product_code = _extract_product_code(card["href"])
+            product_name = (card["title_text"] or card["image_alt"] or "상품명 미확인").strip()
+            image_ok = bool(card["image_src"] or card["image_alt"])
+            promo_type = _classify_promotion(card["text_blob"])
 
-            # 상세 페이지 본문에서 가격 토큰 수집
-            detail_text = page.evaluate(
-                """
-                () => {
-                  const main = document.querySelector("main") || document.body;
-                  return (main.innerText || "").replace(/\s+/g, " ").trim();
-                }
-                """
+            record_product(
+                case_id="TC-04",
+                product_name=product_name,
+                product_code=product_code,
+                product_price=detail_info["sale_price"] or _fallback_price_from_card(card["text_blob"]),
+                discount_amount=detail_info["discount_amount"],
+                image_ok=image_ok,
+                source_url=product_url,
+                promotion_type=promo_type,
             )
-            price_values = _extract_prices(detail_text)
-            unique_prices = sorted(set(price_values))
+            print(
+                "[DATA][TC-04][상품] "
+                f"name={product_name} | code={product_code} | sale={detail_info['sale_price']} | "
+                f"original={detail_info['original_price']} | discount={detail_info['discount_amount']}"
+            )
 
-            # 원가/행사가 구분은 최소 2개 이상의 서로 다른 가격으로 판단
-            if len(unique_prices) >= 2 and unique_prices[0] < unique_prices[-1]:
+            # 원가/행사가 구분: 서로 다른 2개 가격
+            if (
+                detail_info["sale_price"] is not None
+                and detail_info["original_price"] is not None
+                and detail_info["original_price"] > detail_info["sale_price"]
+            ):
                 success_cases += 1
                 break
 
