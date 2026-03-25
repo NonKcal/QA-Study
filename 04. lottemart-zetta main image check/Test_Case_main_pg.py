@@ -38,6 +38,14 @@ N_PLUS_N_RE = re.compile(r"\b\d+\s*\+\s*\d+\b")
 COUNT_CONDITION_RE = re.compile(r"\d+\s*개\s*(?:담기|구매)\s*시")
 # 금액 조건 할인 표기
 AMOUNT_CONDITION_RE = re.compile(r"(?:\d+\s*만원?\s*이상|[0-9,]+\s*원\s*이상).*(?:할인|최대)")
+# 카드 조건 할인(행사카드/카드 결제 시/청구할인 등)
+CARD_CONDITION_RE = re.compile(
+    r"(?:행사\s*카드|카드\s*결제\s*시|카드결제\s*시|카드\s*할인|청구\s*할인|즉시\s*할인)"
+)
+# 행사 신호 키워드: 신호가 있으면 행사 유형 분류를 강제한다.
+PROMOTION_SIGNAL_RE = re.compile(
+    r"(?:\+|할인|행사|증정|쿠폰|카드|구매\s*시|담기\s*시|이상\s*최대)"
+)
 
 
 def _go_main(page: Page) -> None:
@@ -143,9 +151,22 @@ def _classify_promotion(text_blob: str) -> str | None:
         return "n개 담기 시 할인"
     if AMOUNT_CONDITION_RE.search(normalized):
         return "금액조건 할인"
+    # 카드 조건은 결제 수단에 따른 조건형 할인으로 분류한다.
+    if CARD_CONDITION_RE.search(normalized):
+        return "금액조건 할인"
     if PERCENT_DISCOUNT_RE.search(normalized) or "할인" in normalized:
         return "상품할인"
     return None
+
+
+def _has_promotion_signal(text_blob: str) -> bool:
+    """
+    카드 텍스트에 행사 의도를 나타내는 최소 신호가 있는지 판별한다.
+    - 행사 신호가 있는 카드: 유형 분류를 강제
+    - 행사 신호가 없는 카드: 일반 노출 카드로 간주 (TC-02에서 분류 강제 제외)
+    """
+    normalized = re.sub(r"\s+", " ", text_blob or "").strip()
+    return bool(PROMOTION_SIGNAL_RE.search(normalized))
 
 
 def _extract_prices(text_blob: str) -> list[int]:
@@ -177,7 +198,7 @@ class TestLotteMartZettaMainProductValidation:
           - 상품 이미지
           - 상품명
           - 상품금액
-          - 행사 여부(행사 유형 4종 중 하나로 분류 가능)
+          - 행사 여부(행사 신호 카드 기준으로 행사 유형 분류 가능)
         """
         _go_main(page)
         _scroll_until_text_visible(page, PRODUCT_SECTION_TITLE)
@@ -188,6 +209,9 @@ class TestLotteMartZettaMainProductValidation:
         )
 
         inspected = 0
+        promotion_signal_count = 0
+        classified_promotion_count = 0
+
         for card in cards:
             full_href = urljoin(LOTTE_ZETTA_MAIN_URL, card["href"])
             text_blob = card["text_blob"]
@@ -206,13 +230,21 @@ class TestLotteMartZettaMainProductValidation:
             assert len(prices) >= 1, (
                 f"상품금액 누락: href={full_href} | text='{text_blob}'"
             )
-            # 행사 여부/종류 검증: 4종 중 하나로 분류 가능해야 함
-            assert promo_type in PROMOTION_TYPES, (
-                f"행사유형 분류 실패: href={full_href} | text='{text_blob}'"
-            )
+
+            # 행사 신호가 있는 카드만 행사유형 분류를 강제한다.
+            # (운영 배너 특성상 같은 섹션에 일반 상품 타일이 섞일 수 있음)
+            if _has_promotion_signal(text_blob):
+                promotion_signal_count += 1
+                assert promo_type in PROMOTION_TYPES, (
+                    f"행사유형 분류 실패: href={full_href} | text='{text_blob}'"
+                )
+                classified_promotion_count += 1
+
             inspected += 1
 
         assert inspected >= MIN_PRODUCT_CARD_COUNT
+        assert promotion_signal_count >= 1, "행사 신호가 있는 상품 카드를 찾지 못했습니다."
+        assert classified_promotion_count >= 1, "행사 신호 카드의 유형 분류가 모두 실패했습니다."
 
     def test_tc03_promotion_type_grouping(self, page: Page):
         """
@@ -275,7 +307,7 @@ class TestLotteMartZettaMainProductValidation:
                 """
                 () => {
                   const main = document.querySelector("main") || document.body;
-                  return (main.innerText || "").replace(/\\s+/g, " ").trim();
+                  return (main.innerText || "").replace(/\s+/g, " ").trim();
                 }
                 """
             )
