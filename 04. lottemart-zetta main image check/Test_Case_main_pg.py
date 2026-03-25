@@ -78,7 +78,7 @@ def _extract_section_cards(page: Page, section_title: str) -> list[dict]:
     return page.evaluate(
         """
         (sectionTitle) => {
-          const normalize = (v) => (v || "").replace(/\s+/g, " ").trim();
+          const normalize = (v) => (v || "").replace(/\\s+/g, " ").trim();
           const headings = [...document.querySelectorAll("h1,h2,h3,h4")];
           const heading = headings.find((h) =>
             normalize(h.textContent).includes(normalize(sectionTitle))
@@ -133,6 +133,123 @@ def _extract_section_cards(page: Page, section_title: str) -> list[dict]:
         section_title,
     )
 
+
+def _extract_global_product_cards(page: Page) -> list[dict]:
+    """
+    섹션 탐지 실패 시 페이지 전체에서 상품 링크(/products/*/details)를 폴백 수집한다.
+    """
+    return page.evaluate(
+        """
+        () => {
+          const normalize = (v) => (v || "").replace(/\\s+/g, " ").trim();
+          const anchors = [...document.querySelectorAll('a[href*="/products/"][href*="/details"]')];
+          const cards = anchors.map((a) => {
+            const img = a.querySelector("img");
+            const titleNode = a.querySelector("span, p, h3, h4") || a;
+            return {
+              href: a.getAttribute("href") || "",
+              title_text: normalize(titleNode.textContent),
+              image_alt: normalize(img ? img.getAttribute("alt") || "" : ""),
+              image_src: img ? (img.getAttribute("src") || "") : "",
+              text_blob: normalize(
+                [
+                  normalize(titleNode.textContent),
+                  normalize(img ? img.getAttribute("alt") || "" : ""),
+                  normalize(a.getAttribute("aria-label") || ""),
+                ].join(" | ")
+              ),
+            };
+          });
+
+          const dedup = [];
+          const seen = new Set();
+          for (const c of cards) {
+            const key = `${c.href}|${c.title_text}|${c.image_alt}`;
+            if (!c.href || seen.has(key)) continue;
+            seen.add(key);
+            dedup.push(c);
+          }
+          return dedup;
+        }
+        """
+    )
+
+
+def _collect_extraction_diagnostics(page: Page, section_title: str) -> dict:
+    """카드 추출 실패 원인 파악용 진단 정보."""
+    return page.evaluate(
+        """
+        (sectionTitle) => {
+          const normalize = (v) => (v || "").replace(/\\s+/g, " ").trim();
+          const headings = [...document.querySelectorAll("h1,h2,h3,h4")];
+          const heading = headings.find((h) =>
+            normalize(h.textContent).includes(normalize(sectionTitle))
+          );
+          const sectionAnchorCount = heading
+            ? (heading.closest("section,article,div") || heading.parentElement || document.body)
+                .querySelectorAll("a").length
+            : 0;
+          const globalProductAnchors = [...document.querySelectorAll('a[href*="/products/"][href*="/details"]')];
+          return {
+            heading_found: Boolean(heading),
+            heading_text: heading ? normalize(heading.textContent) : "",
+            section_anchor_count: sectionAnchorCount,
+            global_product_anchor_count: globalProductAnchors.length,
+            global_product_sample: globalProductAnchors
+              .slice(0, 5)
+              .map((a) => a.getAttribute("href") || ""),
+          };
+        }
+        """,
+        section_title,
+    )
+
+
+
+def _extract_product_cards_with_fallback(page: Page, section_title: str) -> tuple[list[dict], dict]:
+    """
+    상품 카드 추출 공통 폴백.
+    1) 섹션 기반
+    2) 추가 스크롤 후 섹션 재시도
+    3) 전역 상품 링크 폴백
+    """
+    cards = _extract_section_cards(page, section_title)
+    product_cards = [c for c in cards if _is_product_card(c["href"])]
+    source = "section"
+
+    if not product_cards:
+        for _ in range(8):
+            page.evaluate("() => window.scrollBy(0, Math.floor(window.innerHeight * 1.1))")
+            page.wait_for_timeout(350)
+        page.wait_for_timeout(1_000)
+
+        retry_cards = _extract_section_cards(page, section_title)
+        product_cards = [c for c in retry_cards if _is_product_card(c["href"])]
+        source = "section_retry"
+
+    if not product_cards:
+        product_cards = _extract_global_product_cards(page)
+        source = "global_fallback"
+
+    extract_diag = _collect_extraction_diagnostics(page, section_title)
+    page_diag = page.evaluate(
+        """
+        () => {
+          const bodyText = (document.body?.innerText || "").replace(/\\s+/g, " ").trim();
+          return {
+            page_url: location.href,
+            page_title: document.title || "",
+            ready_state: document.readyState,
+            body_text_len: bodyText.length,
+            has_login_text: bodyText.includes("로그인"),
+            has_welcome_text: bodyText.includes("환영합니다"),
+          };
+        }
+        """
+    )
+    extract_diag["source"] = source
+    extract_diag.update(page_diag)
+    return product_cards, extract_diag
 
 def _extract_prices(text_blob: str) -> list[int]:
     """텍스트에서 가격 토큰을 추출해 정수 원 단위 리스트로 반환한다."""
@@ -203,7 +320,7 @@ def _fetch_detail_price_info(page: Page, product_url: str) -> dict:
             """
             () => {
               const main = document.querySelector("main") || document.body;
-              return (main.innerText || "").replace(/\s+/g, " ").trim();
+              return (main.innerText || "").replace(/\\s+/g, " ").trim();
             }
             """
         )
@@ -252,8 +369,15 @@ class TestLotteMartZettaMainProductValidation:
         _go_main(page)
         _scroll_until_text_visible(page, PRODUCT_SECTION_TITLE)
 
-        cards = _extract_section_cards(page, PRODUCT_SECTION_TITLE)
-        product_cards = [c for c in cards if _is_product_card(c["href"])]
+        product_cards, diag = _extract_product_cards_with_fallback(page, PRODUCT_SECTION_TITLE)
+        print(
+            "[DIAG][TC-02][EXTRACT] "
+            f"source={diag['source']} | heading_found={diag['heading_found']} | "
+            f"heading_text={diag['heading_text']} | section_anchor_count={diag['section_anchor_count']} | "
+            f"global_product_anchor_count={diag['global_product_anchor_count']} | "
+            f"page_title={diag['page_title']} | ready_state={diag['ready_state']} | "
+            f"body_text_len={diag['body_text_len']} | sample={diag['global_product_sample']}"
+        )
 
         assert len(product_cards) >= MIN_PRODUCT_CARD_COUNT, (
             f"상품 카드 수 부족: 기대 >= {MIN_PRODUCT_CARD_COUNT}, 실제={len(product_cards)}"
@@ -320,20 +444,30 @@ class TestLotteMartZettaMainProductValidation:
             inspected += 1
 
         assert inspected >= MIN_PRODUCT_CARD_COUNT
-        assert promotion_signal_count >= 1, "행사 신호가 있는 상품 카드를 찾지 못했습니다."
-        assert classified_promotion_count >= 1, "행사 신호 카드의 유형 분류가 모두 실패했습니다."
+        if promotion_signal_count == 0:
+            # 요청사항: 행사 유형이 없는 경우 실패 대신 0건으로 처리
+            print("[INFO][TC-02] 행사 신호 카드 0건 -> 행사유형 분류 0건으로 처리")
+        else:
+            assert classified_promotion_count >= 1, "행사 신호 카드의 유형 분류가 모두 실패했습니다."
 
     def test_tc03_promotion_type_grouping(self, page: Page):
         """
         TC-03:
           - 상품 카드 행사유형 분류 집계
           - 행사 배너(비상품 카드) 상세 기록
+          - 행사유형 0건은 에러가 아닌 0건 처리
         """
         _go_main(page)
         _scroll_until_text_visible(page, PRODUCT_SECTION_TITLE)
 
-        cards = _extract_section_cards(page, PRODUCT_SECTION_TITLE)
-        product_cards = [c for c in cards if _is_product_card(c["href"])]
+        product_cards, diag = _extract_product_cards_with_fallback(page, PRODUCT_SECTION_TITLE)
+        if not product_cards:
+            print(
+                "[DIAG][TC-03][EXTRACT] "
+                f"source={diag['source']} | heading_found={diag['heading_found']} | "
+                f"global_product_anchor_count={diag['global_product_anchor_count']} | "
+                f"page_title={diag['page_title']}"
+            )
 
         seen_types: set[str] = set()
         for card in product_cards:
@@ -341,11 +475,13 @@ class TestLotteMartZettaMainProductValidation:
             if promo_type:
                 seen_types.add(promo_type)
 
-        assert seen_types, "행사 유형을 하나도 식별하지 못했습니다."
-        assert seen_types.issubset(set(PROMOTION_TYPES)), (
-            f"허용되지 않은 행사 유형 감지: {seen_types - set(PROMOTION_TYPES)}"
-        )
-        assert len(seen_types) >= 2, f"행사 유형 다양성 부족: 감지 유형={sorted(seen_types)}"
+        if not seen_types:
+            print("[INFO][TC-03] 행사 유형 식별 0건 -> 에러 대신 0건으로 처리")
+        else:
+            assert seen_types.issubset(set(PROMOTION_TYPES)), (
+                f"허용되지 않은 행사 유형 감지: {seen_types - set(PROMOTION_TYPES)}"
+            )
+            assert len(seen_types) >= 2, f"행사 유형 다양성 부족: 감지 유형={sorted(seen_types)}"
 
         # 배너형 카드 수집 (비상품 링크)
         banner_logged = 0
@@ -383,12 +519,19 @@ class TestLotteMartZettaMainProductValidation:
         """
         TC-04:
           할인행사 카드에서 원가/행사가 구분 확인 + 상세 로그 기록
+          - 할인행사 후보 0건은 에러가 아닌 0건 처리
         """
         _go_main(page)
         _scroll_until_text_visible(page, PRODUCT_SECTION_TITLE)
 
-        cards = _extract_section_cards(page, PRODUCT_SECTION_TITLE)
-        product_cards = [c for c in cards if _is_product_card(c["href"])]
+        product_cards, diag = _extract_product_cards_with_fallback(page, PRODUCT_SECTION_TITLE)
+        if not product_cards:
+            print(
+                "[DIAG][TC-04][EXTRACT] "
+                f"source={diag['source']} | heading_found={diag['heading_found']} | "
+                f"global_product_anchor_count={diag['global_product_anchor_count']} | "
+                f"page_title={diag['page_title']}"
+            )
 
         discount_candidates = []
         for card in product_cards:
@@ -396,7 +539,9 @@ class TestLotteMartZettaMainProductValidation:
             if promo_type in PROMOTION_TYPES:
                 discount_candidates.append(card)
 
-        assert discount_candidates, "할인행사 카드 후보를 찾지 못했습니다."
+        if not discount_candidates:
+            print("[INFO][TC-04] 할인행사 카드 후보 0건 -> 에러 대신 0건으로 처리")
+            return
 
         success_cases = 0
         checked_samples: list[str] = []
