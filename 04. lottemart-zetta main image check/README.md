@@ -54,18 +54,20 @@ python kakao_auth_bootstrap.py
 3. `pytest` 실행
 4. 테스트 종료 시 `conftest.py`가 카카오톡으로 결과 전송
 5. 전송 시 토큰 만료(401) 발생하면 즉시 재발급 후 재전송
-6. 수집 결과를 `artifacts/observation-summary.json`, `artifacts/observation-summary.md`로 저장
+6. 수집 결과를 `artifacts/observation-summary.json`, `artifacts/observation-summary.md`, `artifacts/observation-summary.csv`로 저장
 
 ## 6) 실행 로그/아티팩트 확인 포인트
 - Actions 콘솔 로그:
   - `[DATA][TC-02][상품] ...`
   - `[DATA][TC-03][배너] ...`
   - `[DATA][TC-04][상품] ...`
+  - `[상품 TSV]`, `[행사배너 TSV]` 블록 (엑셀 붙여넣기용)
 - 업로드 아티팩트:
   - `pytest-report.xml`
   - `artifacts/*.png` (실패 스크린샷)
   - `artifacts/observation-summary.json`
   - `artifacts/observation-summary.md`
+  - `artifacts/observation-summary.csv`
 
 ## 7) 로컬 수동 실행
 ```powershell

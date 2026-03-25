@@ -68,4 +68,5 @@ jobs:
             04. lottemart-zetta main image check/artifacts/*.png
             04. lottemart-zetta main image check/artifacts/*.json
             04. lottemart-zetta main image check/artifacts/*.md
+            04. lottemart-zetta main image check/artifacts/*.csv
           retention-days: 7
