@@ -1,8 +1,10 @@
-name: 롯데마트 제타 메인 노출 QA
+name: 롯데마트 제타 메인 노출 QA (매일 08:00 KST)
 
 on:
   schedule:
-    - cron: "0 23 * * *" # KST 08:00
+    # GitHub Actions cron은 UTC 기준
+    # 매일 오전 8시(KST, UTC+9) = 전일 23:00(UTC)
+    - cron: "0 23 * * *"
   workflow_dispatch:
 
 concurrency:
