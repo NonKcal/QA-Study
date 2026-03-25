@@ -1,0 +1,67 @@
+name: 롯데마트 제타 메인 노출 QA
+
+on:
+  schedule:
+    - cron: "0 23 * * *" # KST 08:00
+  workflow_dispatch:
+
+concurrency:
+  group: lottemart-zetta-main-qa
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 소스 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 의존성 설치
+        run: |
+          cd "04. lottemart-zetta main image check"
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Playwright Chromium 설치
+        run: python -m playwright install chromium --with-deps
+
+      - name: 카카오 토큰 사전 갱신 + Secrets 업데이트
+        env:
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd "04. lottemart-zetta main image check"
+          python refresh_token.py
+
+      - name: pytest 실행 + 카카오톡 결과 전송
+        env:
+          KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          cd "04. lottemart-zetta main image check"
+          python -m pytest Test_Case_main_pg.py -v --tb=short --junitxml=pytest-report.xml
+
+      - name: 실행 아티팩트 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lottemart-zetta-main-${{ github.run_id }}
+          path: |
+            04. lottemart-zetta main image check/pytest-report.xml
+            04. lottemart-zetta main image check/artifacts/*.png
+          retention-days: 7
